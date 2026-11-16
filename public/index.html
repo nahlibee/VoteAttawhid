@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>نتائج التصويت</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <h1>نتائج العمليات الانتخابية</h1>
+  <a href="/team" class="noprint">فرق الفرز</a>
+  <a href="/admin" class="noprint">المشرف</a>
+</header>
+<main id="app"></main>
+<script src="/common.js"></script>
+<script>
+let last = '';
+async function load() {
+  try {
+    const data = await api('GET', '/public');
+    const key = JSON.stringify(data);
+    if (key === last) return;
+    last = key;
+    $('#app').replaceChildren(...(data.rounds.length
+      ? data.rounds.map((r) => h('section', { class: 'card' }, h('h2', {}, r.title), resultsView(r, r.results)))
+      : [h('div', { class: 'card' }, h('h2', {}, 'لم تعلن أي نتيجة بعد'),
+          h('p', { class: 'muted' }, 'ستظهر النتائج هنا تلقائيا عندما ينشرها المشرف على عملية الفرز.'))]));
+  } catch (e) { /* keep the last results on screen if the connection drops */ }
+}
+load();
+setInterval(load, 4000);
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "vote-attawhid",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Paper-ballot counting app for the regional general assembly elections",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=18" }
+}

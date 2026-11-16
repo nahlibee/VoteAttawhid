@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>المشرف على الفرز</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <h1>لوحة المشرف على عملية الفرز</h1>
+  <a href="/" target="_blank">صفحة النتائج العامة</a>
+  <button class="link" id="logout" hidden>خروج</button>
+</header>
+<main>
+  <div class="tabs" id="tabs" hidden>
+    <button data-tab="rounds">الجولات والنتائج</button>
+    <button data-tab="people">لائحة الأعضاء</button>
+    <button data-tab="settings">الإعدادات</button>
+  </div>
+  <div id="app"></div>
+</main>
+<dialog id="dlg"></dialog>
+<script src="/common.js"></script>
+<script>
+TOKEN_KEY = 'tok_admin';
+const app = $('#app');
+const dlg = $('#dlg');
+let state = null;
+let tab = 'rounds';
+let filter = '';
+
+const TEMPLATES = {
+  nomination: { label: 'انتخاب الرئيس: ترشيح الأسماء (3 إلى 5)', title: 'انتخاب الرئيس - الترشيح', mode: 'open', min: 3, max: 5, seats: 5, threshold: 'none' },
+  president: { label: 'انتخاب الرئيس: التصويت على المرشحين', title: 'انتخاب الرئيس - التصويت', mode: 'list', min: 1, max: 1, seats: 1, threshold: 'absolute' },
+  runoff: { label: 'انتخاب الرئيس: الإعادة بين الأول والثاني', title: 'انتخاب الرئيس - الدور الثاني', mode: 'list', min: 1, max: 1, seats: 1, threshold: 'present' },
+  bureau: { label: 'المكتب الجهوي: التصويت على لائحة الرئيس', title: 'عضوية المكتب الجهوي - التصويت', mode: 'list', min: 1, max: 5, seats: 5, threshold: 'absolute' },
+  bureau2: { label: 'المكتب الجهوي: إعادة التصويت', title: 'عضوية المكتب الجهوي - إعادة التصويت', mode: 'list', min: 1, max: 1, seats: 1, threshold: 'present' },
+};
+const THRESHOLDS = { none: 'بدون أغلبية (الأوائل حسب عدد الأصوات)', absolute: 'الأغلبية المطلقة (من العدد المقرر حضورهم)', present: 'أغلبية الحاضرين' };
+const STATUS = { draft: 'لم تفتح بعد', open: 'مفتوحة للإدخال', closed: 'مغلقة' };
+
+const act = async (fn, okMsg) => {
+  try { await fn(); if (okMsg) toast(okMsg); await refresh(true); } catch (err) { toast(err.message, 'err'); }
+};
+
+// ---------- login / first setup ----------
+async function showLogin() {
+  $('#tabs').hidden = true;
+  $('#logout').hidden = true;
+  const pub = await api('GET', '/public').catch(() => ({ ready: true }));
+  const code = h('input', { type: 'password', autocomplete: 'off' });
+  const teamCode = h('input', { type: 'text', autocomplete: 'off' });
+  const form = h('form', { class: 'card login', onsubmit: async (e) => {
+    e.preventDefault();
+    try {
+      if (!pub.ready) await api('POST', '/setup', { supervisorCode: code.value, teamCode: teamCode.value });
+      const s = await api('POST', '/login', { role: 'supervisor', code: code.value });
+      setToken(s.token);
+      refresh(true);
+    } catch (err) { toast(err.message, 'err'); }
+  } },
+    h('h2', {}, pub.ready ? 'دخول المشرف' : 'الإعداد الأول للبرنامج'),
+    !pub.ready && h('p', { class: 'muted' }, 'اختر رمزا سريا للمشرف (يبقى عندك فقط) ورمزا آخر تسلمه لفرق الفرز.'),
+    h('div', { class: 'field' }, h('label', {}, 'رمز المشرف'), code),
+    !pub.ready && h('div', { class: 'field' }, h('label', {}, 'رمز فرق الفرز'), teamCode),
+    h('button', { class: 'primary big' }, pub.ready ? 'دخول' : 'حفظ ودخول'));
+  app.replaceChildren(form);
+  code.focus();
+}
+
+async function refresh(force) {
+  if (!getToken()) return showLogin();
+  try {
+    const next = await api('GET', '/admin/state');
+    const changed = JSON.stringify(next) !== JSON.stringify(state);
+    state = next;
+    $('#tabs').hidden = false;
+    $('#logout').hidden = false;
+    // Live refresh only touches the results tab, so typing in forms is never interrupted.
+    if (force || (changed && tab === 'rounds' && !app.contains(document.activeElement))) render();
+  } catch (err) {
+    if (err.status === 401) { setToken(null); showLogin(); }
+  }
+}
+
+function render() {
+  for (const b of $('#tabs').children) b.classList.toggle('on', b.dataset.tab === tab);
+  ({ rounds: renderRounds, people: renderPeople, settings: renderSettings })[tab]();
+}
+
+// ---------- rounds ----------
+function renderRounds() {
+  const s = state.settings;
+  const warn = !s.present;
+  app.replaceChildren(
+    h('div', { class: 'card noprint' },
+      h('div', { class: 'row' },
+        h('div', { class: 'grow' },
+          h('div', {}, `العدد المقرر حضورهم: ${s.expected} ← الأغلبية المطلقة: ${s.absolute}`),
+          h('div', {}, warn ? 'عدد الحاضرين لم يحدد بعد (من صفحة الإعدادات)' : `عدد الحاضرين: ${s.present} ← أغلبية الحاضرين: ${s.presentMajority}`),
+          h('div', { class: 'muted' }, `الأسماء في اللائحة: ${state.people.length} (منهم ${state.people.filter((p) => p.isMember).length} عضوا)`)),
+        h('button', { class: 'primary', onclick: () => roundDialog() }, '＋ جولة جديدة'),
+        h('button', { onclick: () => window.print() }, 'طباعة النتائج'))),
+    ...(state.rounds.length ? state.rounds.map(roundCard) : [h('div', { class: 'card' }, h('p', { class: 'muted' },
+      'لا توجد أي جولة. ابدأ بإدخال لائحة الأعضاء وعدد الحاضرين، ثم أنشئ الجولة الأولى (ترشيح الأسماء لرئاسة الجهة).'))]));
+}
+
+function roundCard(r) {
+  const res = r.results;
+  const patch = (body, msg) => act(() => api('PATCH', '/rounds/' + r.id, body), msg);
+  const voidInput = h('input', { type: 'number', min: 0, value: r.void });
+  const over = state.settings.present && res.total > state.settings.present;
+  const teams = Object.entries(r.perTeam).map(([t, n]) => `${t}: ${n}`).join(' | ');
+  const next = nextRound(r);
+  return h('section', { class: 'card' },
+    h('div', { class: 'row' },
+      h('h2', { class: 'grow' }, r.title,
+        h('span', { class: 'badge ' + r.status }, STATUS[r.status]),
+        r.published && h('span', { class: 'badge ok' }, 'منشورة للعموم')),
+      h('div', { class: 'row noprint' },
+        r.status !== 'open' && h('button', { class: 'primary', onclick: () => patch({ status: 'open' }, 'الجولة مفتوحة للإدخال') }, r.status === 'closed' ? 'إعادة فتح الإدخال' : 'فتح الإدخال'),
+        r.status === 'open' && h('button', { class: 'primary', onclick: () => patch({ status: 'closed' }, 'تم إغلاق الجولة') }, 'إغلاق الإدخال'),
+        h('button', { onclick: () => patch({ published: !r.published }, r.published ? 'تم إخفاء النتيجة' : 'تم نشر النتيجة') }, r.published ? 'إخفاء عن العموم' : 'نشر النتيجة للعموم'),
+        !res.valid && h('button', { onclick: () => roundDialog(r) }, 'تعديل'),
+        h('button', { onclick: () => ballotsDialog(r) }, 'الأوراق'),
+        h('button', { class: 'danger', onclick: () => {
+          if (confirm(`حذف الجولة «${r.title}» مع جميع أوراقها (${res.valid})؟ لا يمكن التراجع.`)) act(() => api('DELETE', '/rounds/' + r.id), 'تم الحذف');
+        } }, 'حذف'))),
+    h('p', { class: 'muted' },
+      `${r.mode === 'open' ? 'ترشيح حر من اللائحة' : `${r.candidates.length} مرشحين`} · كل ورقة: ${r.min === r.max ? r.min : `${r.min} إلى ${r.max}`} · المقاعد: ${r.seats} · ${THRESHOLDS[r.threshold]}`),
+    h('div', { class: 'row noprint', style: 'margin-bottom:10px' },
+      h('label', { style: 'margin:0' }, 'عدد الأوراق الملغاة:'), voidInput,
+      h('button', { class: 'small', onclick: () => patch({ void: Number(voidInput.value) }, 'تم الحفظ') }, 'حفظ'),
+      teams && h('span', { class: 'muted' }, teams)),
+    over && h('div', { class: 'verdict warn' }, `تنبيه: مجموع الأوراق (${res.total}) أكبر من عدد الحاضرين (${state.settings.present}).`),
+    r.threshold === 'present' && !state.settings.present && h('div', { class: 'verdict warn' }, 'يجب تحديد عدد الحاضرين في الإعدادات لحساب أغلبية الحاضرين.'),
+    h('div', { class: r.mode === 'open' ? 'scroll' : '' }, resultsView(r, res)),
+    next && res.valid > 0 && h('p', { class: 'noprint' }, h('button', { class: 'primary', onclick: () => roundDialog(null, next) }, `إنشاء الجولة التالية: ${TEMPLATES[next.kind].label}`)));
+}
+
+// Suggest the follow-up round from the results; the supervisor can still edit everything.
+function nextRound(r) {
+  const rows = r.results.rows;
+  const elected = rows.filter((x) => x.status === 'elected');
+  const tied = rows.filter((x) => x.status === 'tied');
+  const ids = (list) => list.map((x) => x.id);
+  if (r.kind === 'nomination') return { kind: 'president', candidates: ids([...elected, ...tied]) };
+  if (r.kind === 'president' && !elected.length) return { kind: 'runoff', candidates: ids(runoffCandidates(r.results)) };
+  if ((r.kind === 'bureau' || r.kind === 'bureau2') && r.results.seatsLeft > 0) {
+    const n = r.results.seatsLeft;
+    const pool = tied.length ? tied : rows.filter((x) => x.status !== 'elected');
+    return { kind: 'bureau2', candidates: ids(pool), seats: n, max: Math.min(n, Math.max(pool.length, 1)) };
+  }
+  return null;
+}
+
+function roundDialog(existing, preset) {
+  const init = existing || { ...TEMPLATES[preset?.kind || 'nomination'], kind: preset?.kind || 'nomination', candidates: [], ...preset };
+  let cands = [...(init.candidates || [])];
+  const kind = h('select', {}, Object.entries(TEMPLATES).map(([k, t]) => h('option', { value: k, selected: k === init.kind }, t.label)));
+  const title = h('input', { type: 'text', value: init.title });
+  const min = h('input', { type: 'number', min: 1, value: init.min });
+  const max = h('input', { type: 'number', min: 1, value: init.max });
+  const seats = h('input', { type: 'number', min: 1, value: init.seats });
+  const threshold = h('select', {}, Object.entries(THRESHOLDS).map(([k, t]) => h('option', { value: k, selected: k === init.threshold }, t)));
+  const chips = h('div', { class: 'chips' });
+  const candBox = h('div', { class: 'field' });
+  let mode = init.mode;
+
+  const drawChips = () => chips.replaceChildren(...cands.map((id) => {
+    const p = state.people.find((x) => x.id === id);
+    return h('span', { class: 'chip' }, p ? p.name : '؟', h('button', { type: 'button', onclick: () => { cands = cands.filter((x) => x !== id); drawChips(); } }, '×'));
+  }));
+  const picker = namePicker({
+    people: () => state.people.filter((p) => p.isMember),
+    exclude: () => new Set(cands),
+    onPick: (p) => { cands.push(p.id); drawChips(); picker.focus(); },
+    placeholder: 'أضف مرشحا: اكتب الحروف الأولى من اسمه…',
+  });
+  const drawMode = () => {
+    candBox.replaceChildren(...(mode === 'list'
+      ? [h('label', {}, 'لائحة المرشحين (من أعضاء الجمع العام)'), picker.el, chips]
+      : [h('p', { class: 'muted' }, 'في هذه الجولة يكتب كل عضو الأسماء بحرية، وتختارها فرق الفرز من لائحة الأعضاء.')]));
+  };
+  kind.onchange = () => {
+    const t = TEMPLATES[kind.value];
+    title.value = t.title; min.value = t.min; max.value = t.max; seats.value = t.seats; threshold.value = t.threshold;
+    mode = t.mode;
+    drawMode();
+  };
+  drawMode();
+  drawChips();
+
+  const form = h('form', { onsubmit: (e) => {
+    e.preventDefault();
+    const config = { kind: kind.value, title: title.value, mode, candidates: cands, min: Number(min.value), max: Number(max.value), seats: Number(seats.value), threshold: threshold.value };
+    act(async () => {
+      if (existing) await api('PATCH', '/rounds/' + existing.id, { config }); else await api('POST', '/rounds', config);
+      dlg.close();
+    }, 'تم حفظ الجولة');
+  } },
+    h('h2', {}, existing ? 'تعديل الجولة' : 'جولة جديدة'),
+    h('div', { class: 'field' }, h('label', {}, 'نوع الجولة'), kind),
+    h('div', { class: 'field' }, h('label', {}, 'العنوان'), title),
+    candBox,
+    h('div', { class: 'row field' },
+      h('div', {}, h('label', {}, 'أقل عدد أسماء في الورقة'), min),
+      h('div', {}, h('label', {}, 'أكبر عدد أسماء في الورقة'), max),
+      h('div', {}, h('label', {}, 'عدد المقاعد / المحتفظ بهم'), seats)),
+    h('div', { class: 'field' }, h('label', {}, 'شرط الفوز'), threshold),
+    h('div', { class: 'row' },
+      h('button', { class: 'primary' }, 'حفظ'),
+      h('button', { type: 'button', onclick: () => dlg.close() }, 'إلغاء')));
+  dlg.replaceChildren(form);
+  dlg.showModal();
+}
+
+async function ballotsDialog(r) {
+  const ballots = await api('GET', `/rounds/${r.id}/ballots`).catch((e) => { toast(e.message, 'err'); return null; });
+  if (!ballots) return;
+  const name = (id) => state.people.find((p) => p.id === id)?.name || '؟';
+  dlg.replaceChildren(
+    h('h2', {}, `أوراق الجولة: ${r.title} (${ballots.length})`),
+    h('div', { class: 'scroll' }, h('table', {}, h('tbody', {}, ballots.slice().reverse().map((b) => h('tr', {},
+      h('td', { class: 'muted' }, `#${b.id} · ${b.team}`),
+      h('td', {}, b.choices.map(name).join(' ، ')),
+      h('td', {}, h('button', { class: 'small danger', onclick: () => {
+        if (confirm('حذف هذه الورقة؟')) act(async () => { await api('DELETE', '/ballots/' + b.id); dlg.close(); }, 'تم حذف الورقة');
+      } }, 'حذف'))))))),
+    h('p', {}, h('button', { onclick: () => dlg.close() }, 'إغلاق')));
+  dlg.showModal();
+}
+
+// ---------- people ----------
+function renderPeople() {
+  const one = h('input', { type: 'text', placeholder: 'الاسم الكامل' });
+  const bulk = h('textarea', { placeholder: 'ألصق هنا لائحة الأعضاء: اسم واحد في كل سطر (يمكن نسخ عمود الأسماء مباشرة من ملف Excel)' });
+  const search = h('input', { type: 'text', placeholder: 'بحث في اللائحة…', value: filter });
+  const listBox = h('div', { class: 'scroll' });
+  const drawList = () => {
+    const shown = filter ? searchPeople(state.people, filter, 500) : state.people;
+    const sorted = shown.slice().sort((a, b) => a.isMember - b.isMember || a.name.localeCompare(b.name, 'ar'));
+    listBox.replaceChildren(h('table', {}, h('tbody', {}, sorted.map((p) => h('tr', {},
+      h('td', {}, p.name, h('span', { class: 'badge ' + (p.isMember ? 'ok' : 'warn') }, p.isMember ? 'عضو' : 'غير عضو')),
+      h('td', { class: 'row', style: 'justify-content:flex-end' },
+        !p.isMember && h('button', { class: 'small primary', onclick: () => act(() => api('PATCH', '/people/' + p.id, { isMember: true }), 'تم اعتماده كعضو، وأصواته تحتسب الآن') }, 'اعتماده كعضو'),
+        p.isMember && h('button', { class: 'small', onclick: () => {
+          if (confirm(`إزالة صفة العضوية عن «${p.name}»؟`)) act(() => api('PATCH', '/people/' + p.id, { isMember: false }));
+        } }, 'إزالة العضوية'),
+        h('button', { class: 'small', onclick: () => {
+          const name = prompt('تصحيح الاسم:', p.name);
+          if (name && name.trim() !== p.name) act(() => api('PATCH', '/people/' + p.id, { name }), 'تم التصحيح');
+        } }, 'تصحيح'),
+        h('button', { class: 'small', onclick: () => mergeDialog(p) }, 'دمج'),
+        !p.used && h('button', { class: 'small danger', onclick: () => {
+          if (confirm(`حذف «${p.name}» من اللائحة؟`)) act(() => api('DELETE', '/people/' + p.id), 'تم الحذف');
+        } }, 'حذف')))))));
+  };
+  search.oninput = () => { filter = search.value; drawList(); };
+  const nonMembers = state.people.filter((p) => !p.isMember).length;
+  app.replaceChildren(
+    h('div', { class: 'card' },
+      h('h2', {}, 'إضافة عضو'),
+      h('form', { class: 'row', onsubmit: (e) => {
+        e.preventDefault();
+        act(() => api('POST', '/people', { name: one.value, isMember: true }), 'تمت الإضافة كعضو');
+      } }, h('div', { class: 'grow' }, one), h('button', { class: 'primary' }, 'إضافة كعضو')),
+      h('p', { class: 'muted' }, 'إذا كان الاسم قد أدخلته فرق الفرز من قبل كـ«غير عضو»، يصبح عضوا وتحتسب أصواته تلقائيا.'),
+      h('h3', {}, 'إدخال اللائحة كاملة'),
+      bulk,
+      h('p', {}, h('button', { class: 'primary', onclick: () => act(async () => {
+        const r = await api('POST', '/people/import', { text: bulk.value });
+        toast(`تمت إضافة ${r.added} اسما من أصل ${r.total}`);
+      }) }, 'إضافة اللائحة'))),
+    h('div', { class: 'card' },
+      h('h2', {}, `اللائحة: ${state.people.length} اسما`, nonMembers ? h('span', { class: 'badge warn' }, `${nonMembers} غير عضو`) : null),
+      h('div', { class: 'field' }, search),
+      listBox));
+  drawList();
+}
+
+function mergeDialog(from) {
+  let target = null;
+  const chosen = h('p', { class: 'muted' }, 'لم يتم اختيار أي اسم.');
+  const picker = namePicker({
+    people: () => state.people.filter((p) => p.id !== from.id),
+    onPick: (p) => { target = p; chosen.textContent = `سيتم الدمج في: ${p.name}`; },
+    placeholder: 'الاسم الصحيح…',
+  });
+  dlg.replaceChildren(
+    h('h2', {}, `دمج «${from.name}»`),
+    h('p', { class: 'muted' }, 'يستعمل عندما يكتب نفس الشخص بطريقتين. تنقل جميع أصوات هذا الاسم إلى الاسم الصحيح ثم يحذف.'),
+    picker.el, chosen,
+    h('div', { class: 'row', style: 'margin-top:160px' },
+      h('button', { class: 'primary', onclick: () => {
+        if (!target) return toast('اختر الاسم الصحيح أولا', 'err');
+        act(async () => { await api('POST', '/people/merge', { from: from.id, to: target.id }); dlg.close(); }, 'تم الدمج');
+      } }, 'دمج'),
+      h('button', { onclick: () => dlg.close() }, 'إلغاء')));
+  dlg.showModal();
+  picker.focus();
+}
+
+// ---------- settings ----------
+function renderSettings() {
+  const s = state.settings;
+  const expected = h('input', { type: 'number', min: 1, value: s.expected });
+  const present = h('input', { type: 'number', min: 0, value: s.present });
+  const teamCode = h('input', { type: 'text', value: s.teamCode });
+  const supCode = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'اتركه فارغا إذا لم ترد تغييره' });
+  app.replaceChildren(
+    h('form', { class: 'card', onsubmit: (e) => {
+      e.preventDefault();
+      act(() => api('PUT', '/settings', { expected: Number(expected.value), present: Number(present.value) }), 'تم الحفظ');
+    } },
+      h('h2', {}, 'أعداد الجمع العام'),
+      h('div', { class: 'field' }, h('label', {}, 'العدد المقرر حضورهم في الجمع العام (تحسب منه الأغلبية المطلقة)'), expected),
+      h('div', { class: 'field' }, h('label', {}, 'عدد الحاضرين فعليا (تحسب منه أغلبية الحاضرين)'), present),
+      h('p', { class: 'muted' }, `حاليا: الأغلبية المطلقة = ${s.absolute} · أغلبية الحاضرين = ${s.present ? s.presentMajority : '—'}`),
+      h('button', { class: 'primary' }, 'حفظ')),
+    h('form', { class: 'card', onsubmit: (e) => {
+      e.preventDefault();
+      act(() => api('PUT', '/settings', { teamCode: teamCode.value, supervisorCode: supCode.value || undefined }), 'تم الحفظ');
+    } },
+      h('h2', {}, 'رموز الدخول'),
+      h('div', { class: 'field' }, h('label', {}, 'رمز فرق الفرز'), teamCode),
+      h('div', { class: 'field' }, h('label', {}, 'رمز جديد للمشرف'), supCode),
+      h('button', { class: 'primary' }, 'حفظ')),
+    h('div', { class: 'card' },
+      h('h2', {}, 'عناوين الصفحات'),
+      h('p', {}, 'فرق الفرز: ', h('b', { dir: 'ltr' }, location.origin + '/team')),
+      h('p', {}, 'النتائج العامة (للعرض على الشاشة): ', h('b', { dir: 'ltr' }, location.origin + '/'))));
+}
+
+$('#tabs').addEventListener('click', (e) => {
+  if (e.target.dataset.tab) { tab = e.target.dataset.tab; render(); }
+});
+$('#logout').onclick = () => { setToken(null); state = null; showLogin(); };
+refresh(true);
+setInterval(() => { if (getToken() && state && !dlg.open) refresh(); }, 3000);
+</script>
+</body>
+</html>

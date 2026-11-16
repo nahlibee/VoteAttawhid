@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>إدخال أوراق التصويت</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <h1 id="title">فرق الفرز</h1>
+  <span id="who"></span>
+  <button class="link" id="logout" hidden>خروج</button>
+</header>
+<main id="app"></main>
+<script src="/common.js"></script>
+<script>
+TOKEN_KEY = 'tok_team';
+const app = $('#app');
+let state = null;      // last server state
+let roundId = null;    // round being entered
+let picks = [];        // ids chosen for the ballot in progress
+let picker = null;
+let saving = false;
+
+const byId = (id) => state.people.find((p) => p.id === id);
+const current = () => state.rounds.find((r) => r.id === roundId);
+
+function showLogin() {
+  $('#logout').hidden = true;
+  $('#who').textContent = '';
+  const team = h('select', {}, Array.from({ length: 10 }, (_, i) => h('option', {}, `الفريق ${i + 1}`)));
+  const code = h('input', { type: 'password', autocomplete: 'off' });
+  const form = h('form', { class: 'card login', onsubmit: async (e) => {
+    e.preventDefault();
+    try {
+      const s = await api('POST', '/login', { role: 'team', team: team.value, code: code.value });
+      setToken(s.token);
+      refresh(true);
+    } catch (err) { toast(err.message, 'err'); }
+  } },
+    h('h2', {}, 'دخول فريق الفرز'),
+    h('div', { class: 'field' }, h('label', {}, 'الفريق'), team),
+    h('div', { class: 'field' }, h('label', {}, 'رمز الفرق (يسلمه المشرف)'), code),
+    h('button', { class: 'primary big' }, 'دخول'));
+  app.replaceChildren(form);
+  code.focus();
+}
+
+async function refresh(full) {
+  if (!getToken()) return showLogin();
+  try {
+    const prevRounds = state && JSON.stringify(state.rounds);
+    state = await api('GET', '/team/state');
+    $('#who').textContent = state.team;
+    $('#logout').hidden = false;
+    if (!current()) { roundId = state.rounds.length === 1 ? state.rounds[0].id : null; picks = []; full = true; }
+    if (full || prevRounds !== JSON.stringify(state.rounds)) render(); else renderSide();
+  } catch (err) {
+    if (err.status === 401) { setToken(null); showLogin(); }
+  }
+}
+
+function render() {
+  const r = current();
+  if (!state.rounds.length) {
+    app.replaceChildren(h('div', { class: 'card' }, h('h2', {}, 'لا توجد جولة مفتوحة حاليا'),
+      h('p', { class: 'muted' }, 'انتظروا حتى يفتح المشرف جولة التصويت. هذه الصفحة تتحدث تلقائيا.')));
+    return;
+  }
+  if (!r) {
+    app.replaceChildren(h('div', { class: 'card' }, h('h2', {}, 'اختر الجولة'),
+      state.rounds.map((x) => h('p', {}, h('button', { class: 'big', onclick: () => { roundId = x.id; picks = []; render(); } }, x.title)))));
+    return;
+  }
+  const rule = r.min === r.max ? `${r.min} بالضبط` : `من ${r.min} إلى ${r.max}`;
+  const entry = h('div', { class: 'card' },
+    h('div', { class: 'row' },
+      h('h2', { class: 'grow' }, r.title),
+      state.rounds.length > 1 && h('button', { class: 'small', onclick: () => { roundId = null; render(); } }, 'تغيير الجولة')),
+    h('p', { class: 'muted' }, `عدد الأسماء في كل ورقة: ${rule}. الورقة التي لا تحترم ذلك أو غير الواضحة تعتبر ملغاة وتسلم للمشرف.`),
+    h('div', { id: 'entry' }),
+    h('div', { class: 'row' },
+      h('button', { class: 'primary big', id: 'save', onclick: saveBallot }, 'حفظ الورقة (Enter)'),
+      h('button', { onclick: () => { picks = []; renderEntry(); } }, 'مسح'),
+      h('span', { class: 'muted', id: 'hint' })));
+  app.replaceChildren(entry, h('div', { class: 'card', id: 'side' }));
+  picker = null;
+  renderEntry();
+  renderSide();
+}
+
+function renderEntry() {
+  const r = current();
+  const box = $('#entry');
+  if (!r || !box) return;
+  if (r.mode === 'list') {
+    box.replaceChildren(h('div', { class: 'cands' }, r.candidates.map((id, i) => h('button', {
+      class: 'cand' + (picks.includes(id) ? ' on' : ''), onclick: () => toggle(id),
+    }, h('kbd', {}, i + 1), byId(id)?.name))),
+    h('p', { class: 'muted' }, 'اضغط على رقم المرشح في لوحة المفاتيح لاختياره، ثم Enter لحفظ الورقة.'));
+  } else {
+    if (!picker) {
+      picker = namePicker({
+        people: () => state.people,
+        exclude: () => new Set(picks),
+        onPick: (p) => addPick(p.id),
+        onCreate: async (text) => {
+          if (!confirm(`الاسم «${text}» غير موجود في اللائحة. هل تريد إضافته كاسم جديد (غير عضو)؟`)) return picker.focus();
+          try {
+            const p = await api('POST', '/people', { name: text });
+            if (!byId(p.id)) state.people.push(p);
+            addPick(p.id);
+          } catch (err) { toast(err.message, 'err'); }
+        },
+        onEmptyEnter: saveBallot,
+        onEmptyBackspace: () => { picks.pop(); renderEntry(); },
+      });
+      box.replaceChildren(picker.el, h('div', { class: 'chips', id: 'chips' }));
+    }
+    $('#chips').replaceChildren(...picks.map((id, i) => {
+      const p = byId(id);
+      return h('span', { class: 'chip' + (p.isMember ? '' : ' nonmember') }, `${i + 1}. ${p.name}`,
+        !p.isMember && ' (غير عضو)',
+        h('button', { title: 'حذف', onclick: () => { picks = picks.filter((x) => x !== id); renderEntry(); } }, '×'));
+    }));
+    picker.focus();
+  }
+  const ok = picks.length >= r.min && picks.length <= r.max;
+  $('#save').disabled = !ok;
+  $('#hint').textContent = `الأسماء المختارة: ${picks.length}`;
+}
+
+function addPick(id) {
+  const r = current();
+  if (picks.includes(id)) return;
+  if (picks.length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فهي ملغاة.`, 'err');
+  picks.push(id);
+  renderEntry();
+}
+
+function toggle(id) {
+  const r = current();
+  if (picks.includes(id)) picks = picks.filter((x) => x !== id);
+  else if (r.max === 1) picks = [id];
+  else if (picks.length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فهي ملغاة.`, 'err');
+  else picks.push(id);
+  renderEntry();
+}
+
+async function saveBallot() {
+  const r = current();
+  if (!r || saving) return;
+  if (picks.length < r.min) return toast(`يجب إدخال ${r.min} أسماء على الأقل. إذا كانت الورقة تضم أقل فهي ملغاة وتسلم للمشرف.`, 'err');
+  saving = true;
+  try {
+    await api('POST', '/ballots', { roundId: r.id, choices: picks });
+    picks = [];
+    toast('تم حفظ الورقة ✓');
+    await refresh();
+    renderEntry();
+  } catch (err) { toast(err.message, 'err'); }
+  saving = false;
+}
+
+function renderSide() {
+  const side = $('#side');
+  const r = current();
+  if (!side || !r) return;
+  const mine = state.recent.filter((b) => b.roundId === r.id);
+  side.replaceChildren(
+    h('h2', {}, `أوراق أدخلها ${state.team} في هذه الجولة: ${state.counts[r.id] || 0}`),
+    mine.length ? h('table', {}, h('tbody', {}, mine.map((b) => h('tr', {},
+      h('td', {}, b.choices.map((id) => byId(id)?.name).join(' ، ')),
+      h('td', { style: 'width:90px' }, h('button', { class: 'small danger', onclick: async () => {
+        if (!confirm('حذف هذه الورقة؟')) return;
+        try { await api('DELETE', '/ballots/' + b.id); toast('تم الحذف'); refresh(); } catch (err) { toast(err.message, 'err'); }
+      } }, 'حذف'))))))
+      : h('p', { class: 'muted' }, 'آخر الأوراق المدخلة تظهر هنا، ويمكن حذف ورقة أدخلت بالخطأ.'));
+}
+
+document.addEventListener('keydown', (e) => {
+  const r = state && current();
+  if (!r || document.querySelector('dialog[open]')) return;
+  if (r.mode === 'list' && e.target.tagName !== 'INPUT') {
+    // Accept both Latin and Arabic-Indic digits.
+    const n = '123456789'.indexOf(e.key) + 1 || '١٢٣٤٥٦٧٨٩'.indexOf(e.key) + 1;
+    if (n && r.candidates[n - 1]) { toggle(r.candidates[n - 1]); e.preventDefault(); }
+    else if (e.key === 'Enter') { e.preventDefault(); saveBallot(); }
+  }
+});
+
+$('#logout').onclick = () => { setToken(null); state = null; showLogin(); };
+refresh(true);
+setInterval(() => { if (getToken() && state) refresh(); }, 5000);
+</script>
+</body>
+</html>

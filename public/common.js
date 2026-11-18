@@ -90,7 +90,7 @@ function namePicker(opts) {
     list.replaceChildren(...items.map((it, i) => h('div', {
       class: 'picker-item' + (i === active ? ' active' : '') + (it.create ? ' create' : ''),
       onmousedown: (e) => { e.preventDefault(); choose(i); },
-    }, it.create ? `➕ إضافة «${it.create}» كاسم جديد` : [it.p.name, !it.p.isMember && h('span', { class: 'badge warn' }, 'غير عضو')])));
+    }, it.create ? `➕ إضافة «${it.create}» كاسم جديد` : [it.p.name, !it.p.isMember && h('span', { class: 'badge warn' }, it.p.pending ? 'في انتظار المصادقة' : 'غير عضو')])));
     list.style.display = items.length ? 'block' : 'none';
   }
 
@@ -115,7 +115,8 @@ function namePicker(opts) {
       if (items.length) choose(active);
       else if (!input.value.trim() && opts.onEmptyEnter) opts.onEmptyEnter();
     } else if (e.key === 'Backspace' && !input.value && opts.onEmptyBackspace) opts.onEmptyBackspace();
-    else if (e.key === 'Escape') { input.value = ''; render(); }
+    // Escape clears the field only; without preventDefault it would also close a window around it.
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); input.value = ''; render(); }
   });
 
   return { el: wrap, input, focus: () => input.focus() };
@@ -123,15 +124,19 @@ function namePicker(opts) {
 
 const names = (rows) => rows.map((r) => r.name).join(' ، ');
 
+// President vote and run-off elect someone; the other rounds keep (retain) names.
+const isElection = (round) => round.kind === 'president' || round.kind === 'runoff';
+
 // Plain-language outcome of a round, as a list of {kind, text}.
 function verdict(round, res) {
   const out = [];
   const elected = res.rows.filter((r) => r.status === 'elected');
   const tied = res.rows.filter((r) => r.status === 'tied');
   if (!res.valid) return [{ kind: 'info', text: 'لم يتم إدخال أي ورقة بعد.' }];
+  if (res.thresholdMissing) return [{ kind: 'warn', text: 'عدد الحاضرين غير محدد: لا يمكن حساب أغلبية الحاضرين.' }];
   if (elected.length) {
     const label = round.kind === 'nomination' ? 'المرشحون المحتفظ بهم'
-      : round.seats === 1 ? 'الفائز' : 'الأعضاء المحتفظ بهم';
+      : isElection(round) ? 'المنتخب' : round.seats === 1 ? 'المحتفظ به' : 'الأعضاء المحتفظ بهم';
     out.push({ kind: 'ok', text: `${label}: ${names(elected)}` });
   }
   if (tied.length) {
@@ -140,6 +145,10 @@ function verdict(round, res) {
     out.push({ kind: 'warn', text: elected.length
       ? `مقاعد لم تحسم بعد: ${res.seatsLeft} (لم يحصل باقي المرشحين على الأغلبية المطلوبة: ${res.threshold})`
       : `لم يحصل أي مرشح على الأغلبية المطلوبة (${res.threshold} صوتا).` });
+    const voted = res.rows.filter((r) => r.votes > 0);
+    if (round.kind !== 'president' && round.seats === 1 && voted.length > 1 && voted[0].votes === voted[1].votes) {
+      out.push({ kind: 'warn', text: `تعادل (${voted[0].votes} صوتا) بين: ${names(voted.filter((r) => r.votes === voted[0].votes))}` });
+    }
     if (round.kind === 'president' && !elected.length) {
       const top = runoffCandidates(res);
       out.push({ kind: top.length === 2 ? 'info' : 'warn', text: top.length === 2
@@ -157,6 +166,34 @@ function runoffCandidates(res) {
   return rows.filter((r) => r.votes >= rows[1].votes);
 }
 
+// Suggest the follow-up round from the results; the supervisor can still edit everything.
+function nextRound(r) {
+  const rows = r.results.rows;
+  const elected = rows.filter((x) => x.status === 'elected');
+  const tied = rows.filter((x) => x.status === 'tied');
+  const ids = (list) => list.map((x) => x.id);
+  if (r.kind === 'nomination') return { kind: 'president', candidates: ids([...elected, ...tied]) };
+  if (r.kind === 'president' && !elected.length) return { kind: 'runoff', candidates: ids(runoffCandidates(r.results)) };
+  if ((r.kind === 'bureau' || r.kind === 'bureau2') && r.results.seatsLeft > 0) {
+    const n = r.results.seatsLeft;
+    const pool = tied.length ? tied : rows.filter((x) => x.status !== 'elected');
+    return { kind: 'bureau2', candidates: ids(pool), seats: n, max: Math.min(n, Math.max(pool.length, 1)) };
+  }
+  return null;
+}
+
+// Same rule as the server: who may be a candidate of a president vote or run-off.
+function allowedCandidates(rounds, kind, exceptId) {
+  const source = { president: 'nomination', runoff: 'president' }[kind];
+  if (!source) return null;
+  const prev = rounds.filter((r) => r.kind === source && r.id !== exceptId).sort((a, b) => b.id - a.id)[0];
+  if (!prev) return null;
+  const ids = kind === 'president'
+    ? prev.results.rows.filter((x) => x.status === 'elected' || x.status === 'tied').map((x) => x.id)
+    : prev.candidates;
+  return { ids, title: prev.title };
+}
+
 const STATUS_LABEL = { elected: 'محتفظ به', tied: 'تعادل', nonmember: 'غير عضو', below: '' };
 
 function resultsView(round, res) {
@@ -166,7 +203,7 @@ function resultsView(round, res) {
   return h('div', { class: 'results' },
     h('div', { class: 'stats' },
       h('span', {}, `الأوراق الصحيحة: ${res.valid}`),
-      h('span', {}, `الملغاة: ${res.void}`),
+      h('span', {}, `الملغاة: ${res.void}` + (res.voidManual ? ` (الفرق: ${res.voidTeams}، المشرف: ${res.voidManual})` : '')),
       h('span', {}, `المجموع: ${res.total}`),
       thresholdText && h('span', { class: 'strong' }, thresholdText)),
     h('div', { class: 'verdicts' }, verdict(round, res).map((v) => h('div', { class: 'verdict ' + v.kind }, v.text))),
@@ -174,7 +211,7 @@ function resultsView(round, res) {
       h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'الاسم'), h('th', {}, 'الأصوات'), h('th', {}, ''))),
       h('tbody', {}, res.rows.map((r, i) => h('tr', { class: r.status },
         h('td', {}, i + 1),
-        h('td', {}, r.name, STATUS_LABEL[r.status] && h('span', { class: 'badge ' + r.status }, round.seats === 1 && r.status === 'elected' ? 'الفائز' : STATUS_LABEL[r.status])),
+        h('td', {}, r.name, STATUS_LABEL[r.status] && h('span', { class: 'badge ' + r.status }, isElection(round) && r.status === 'elected' ? 'منتخب' : r.pending ? 'في انتظار المصادقة' : STATUS_LABEL[r.status])),
         h('td', { class: 'num' }, r.votes),
         h('td', { class: 'barcell' }, h('div', { class: 'bar', style: `width:${(r.votes / max) * 100}%` })))))) : null);
 }

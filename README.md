@@ -26,7 +26,7 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 
 1. **Members** tab: paste the member list (one name per line, a column copied from Excel works).
 2. **Settings** tab: enter the number of members expected and the number present.
-3. **Rounds** tab: create a round, press "open", and the teams start entering papers. Close it when all papers are in, enter the number of cancelled papers, then publish.
+3. **Rounds** tab: create a round, press "open", and the teams start entering papers. Close it when all papers are in (cancelled papers are recorded by the teams as they go), then publish.
 4. Each round offers a button that prepares the next one from its results (candidates already filled in).
 
 ### Rounds
@@ -41,15 +41,18 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 
 - Absolute majority = half of the members expected, rounded down, plus one (170 gives 86).
 - Majority of those present = the same, from the number present. Cancelled papers do not lower it.
+- The number present can be changed at any time (also from the rounds tab). It applies to rounds that are open or not opened yet; a round keeps the numbers it was closed with, so later changes never alter a decided result.
 - A draw for the last place is shown with the names concerned; the supervisor decides what to do (usually a re-vote round between them).
-- A paper with too few or too many names is cancelled: the team hands it to the supervisor, who enters the count of cancelled papers.
-- In the nomination round a team can add a name that is not on the list. It is marked "not a member" and is not counted among the candidates, unless the supervisor marks that person as a member, in which case the votes already entered count at once.
+- A name written twice (or more) on a paper, or a name that is not a candidate of the round, is removed from it entirely, as if it was never written. The paper then counts for the other names, unless too few remain, in which case it is cancelled.
+- A paper that is cancelled (too few or too many names, unreadable, blank…) is recorded by the team with the «ورقة ملغاة» button and the team moves on. Cancelled papers are counted per team, per round and in total; the supervisor can also add cancelled papers handed to them directly.
+- In the nomination round a team can add a name that is not on the list and carry on. The name waits for the supervisor, who gets a notice on the supervisor page and accepts it (its votes, including those already entered, count at once), rejects it (its votes never count), or merges it with an existing member. Until then its votes are not counted.
+- Each computer is one counting team: at its first login it gets the next team number by itself, and keeps it. A computer can join at any time, even during a round.
 - The approval of the two vice-presidents is counted on the podium and is not in the app.
 
 ### Entry shortcuts for the teams
 
 - Nomination: type the first letters, `Enter` picks the name, `Enter` on the empty field saves the paper, `Backspace` removes the last name.
-- Candidate rounds: press the candidate's number, then `Enter`.
+- Candidate rounds: press the candidate's number, then `Enter`. Press `0` for each name on the paper that is not a candidate (not counted).
 - A paper entered by mistake can be deleted from the list under the entry area.
 
 ## Where to run it
@@ -67,8 +70,26 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 - Blank voting papers, one per member per round (about 170 × 6 to cover re-votes), pens, and a box per team for papers already entered
 - A tray for cancelled papers at the supervisor's table
 
+## HTTPS
+
+```bash
+./make-cert.sh
+```
+
+creates a certificate for the laptop's current addresses in `certs/`; the app then answers in HTTPS and redirects `http://` to it. Run it again when the laptop changes network. Other devices show a warning until `certs/ca.pem` is imported in their browser.
+
+`./start.sh` starts the app, opens the firewall port (firewalld) while it runs, closes it on exit, and keeps the laptop awake.
+
 ## Tests
 
 ```bash
-npm test
+node --test
 ```
+
+Browser test of every button and the election scenarios, in a headless Firefox with throwaway data (about 3 minutes):
+
+```bash
+node e2e/ui-check.js
+```
+
+The test plan, with the manual checklist for every button and the full election scenarios, is in [docs/TEST_PLAN.md](docs/TEST_PLAN.md).

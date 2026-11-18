@@ -4,6 +4,8 @@
   --warn: #9a5b00; --warn-bg: #fff3d6; --err: #b3261e; --err-bg: #fde7e5; --info-bg: #e8f0fb;
 }
 * { box-sizing: border-box; }
+/* The hidden attribute must win over display rules such as .tabs { display: flex }. */
+[hidden] { display: none !important; }
 html { font-size: 17px; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
@@ -65,12 +67,14 @@ button.big { padding: 12px 28px; font-size: 1.1rem; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; min-height: 44px; margin: 10px 0; }
 .chip { background: var(--ok-bg); color: var(--ok); border-radius: 99px; padding: 5px 6px 5px 14px; display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .chip.nonmember { background: var(--warn-bg); color: var(--warn); }
+.chip.dup { background: var(--err-bg); color: var(--err); text-decoration: line-through; }
 .chip button { border: 0; background: rgba(0,0,0,.08); border-radius: 50%; width: 26px; height: 26px; padding: 0; line-height: 1; }
 
 /* candidate buttons */
 .cands { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin: 12px 0; }
 .cand { text-align: start; padding: 14px; font-size: 1.1rem; display: flex; gap: 12px; align-items: center; border-width: 2px; }
 .cand kbd { background: #e6eaee; border-radius: 6px; padding: 0 9px; font: inherit; font-weight: 700; }
+.cand.dup { background: var(--err-bg); border-color: var(--err); color: var(--err); text-decoration: line-through; }
 .cand.on { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); font-weight: 700; }
 
 /* results */
@@ -101,6 +105,7 @@ tr.nonmember td { color: var(--muted); }
 #toast.err { background: var(--err); }
 dialog { border: 0; border-radius: 12px; padding: 20px; width: min(640px, 94vw); box-shadow: 0 20px 60px rgba(0,0,0,.3); }
 dialog::backdrop { background: rgba(0,0,0,.4); }
+.card.alert { border: 2px solid #d99a1c; background: var(--warn-bg); }
 .login { max-width: 420px; margin: 8vh auto; }
 
 @media print {

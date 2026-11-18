@@ -18,6 +18,7 @@ let db = {
   rounds: [], // {id, title, kind, mode, candidates, min, max, seats, threshold, status, published, void}
   ballots: [], // {id, roundId, team, choices, at}
   sessions: {}, // token -> {role, team}
+  teams: [], // {device, name}: one team per computer
   seq: { p: 0, r: 0, b: 0 },
 };
 
@@ -25,6 +26,8 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 if (fs.existsSync(FILE)) {
   db = Object.assign(db, JSON.parse(fs.readFileSync(FILE, 'utf8')));
   fs.copyFileSync(FILE, path.join(DATA_DIR, `vote.backup-${Date.now()}.json`));
+  // Rounds closed before counts were frozen keep the counts in force now.
+  for (const r of db.rounds) if (r.status === 'closed' && !r.frozen) r.frozen = countsNow();
 }
 
 function save() {
@@ -41,6 +44,7 @@ class HttpError extends Error {
 }
 const bad = (msg, status = 400) => { throw new HttpError(status, msg); };
 
+const list = (v) => (Array.isArray(v) ? v : []);
 const person = (id) => db.people.find((p) => p.id === id);
 const round = (id) => db.rounds.find((r) => r.id === id) || bad('الجولة غير موجودة', 404);
 const intIn = (v, lo, hi, label) => {
@@ -49,7 +53,9 @@ const intIn = (v, lo, hi, label) => {
   return n;
 };
 
-function addPerson(name, isMember) {
+// addedBy: the team that wrote this unknown name. Such a name waits for the
+// supervisor's decision (pending) and its votes are not counted until accepted.
+function addPerson(name, isMember, addedBy) {
   name = String(name || '').replace(/\s+/g, ' ').trim();
   if (!name) bad('الاسم فارغ');
   if (name.length > 80) bad('الاسم طويل جدا');
@@ -58,26 +64,76 @@ function addPerson(name, isMember) {
   if (p) {
     // A supervisor adding an existing non-member as a member promotes them.
     if (isMember && !p.isMember) p.isMember = true;
+    if (isMember) delete p.pending;
     return p;
   }
   p = { id: ++db.seq.p, name, isMember: !!isMember };
+  if (!isMember && addedBy) Object.assign(p, { pending: true, addedBy, addedAt: Date.now() });
   db.people.push(p);
   return p;
 }
 
+// Each computer is its own team: the first login of a computer creates the next
+// free "الفريق N", and the same computer always gets the same team back.
+function teamFor(device) {
+  let t = db.teams.find((x) => x.device === device);
+  if (!t) {
+    const used = new Set([...db.teams.map((x) => x.name), ...db.ballots.map((b) => b.team), ...Object.values(db.sessions).map((s) => s.team)]);
+    let n = 1;
+    while (used.has(`الفريق ${n}`)) n++;
+    t = { device, name: `الفريق ${n}` };
+    db.teams.push(t);
+  }
+  return t;
+}
+
+// Splits the names written on a paper into those written once (counted) and
+// those written more than once (not counted at all).
+function splitDuplicates(ids) {
+  const times = new Map();
+  for (const id of ids) times.set(id, (times.get(id) || 0) + 1);
+  const kept = [...times.keys()].filter((id) => times.get(id) === 1);
+  const dropped = [...times.keys()].filter((id) => times.get(id) > 1);
+  return { kept, dropped };
+}
+
+// The counts a round is judged on. A closed round keeps the counts it was closed
+// with, so changing the present count later only affects rounds still in progress.
+function countsNow() {
+  return { expected: db.settings.expected, present: db.settings.present };
+}
+
 function resultsFor(r) {
-  return computeResults(r, db.ballots.filter((b) => b.roundId === r.id), db.people, db.settings);
+  return computeResults(r, db.ballots.filter((b) => b.roundId === r.id), db.people, r.frozen || countsNow());
 }
 
 function personUsed(id) {
   return db.ballots.some((b) => b.choices.includes(id)) || db.rounds.some((r) => r.candidates.includes(id));
 }
 
+// The president vote is between the names retained by the latest nomination round
+// (including any tied for the last place); the run-off is between candidates of the
+// latest president vote. Returns null when there is no such earlier round.
+function allowedCandidates(kind, exceptId) {
+  const source = { president: 'nomination', runoff: 'president' }[kind];
+  if (!source) return null;
+  const prev = db.rounds.filter((r) => r.kind === source && r.id !== exceptId).sort((a, b) => b.id - a.id)[0];
+  if (!prev) return null;
+  const ids = kind === 'president'
+    ? resultsFor(prev).rows.filter((x) => x.status === 'elected' || x.status === 'tied').map((x) => x.id)
+    : prev.candidates;
+  return { ids, title: prev.title };
+}
+
 function roundInput(body, existing) {
   const mode = body.mode === 'open' ? 'open' : 'list';
-  const candidates = mode === 'list' ? [...new Set((body.candidates || []).map(Number))] : [];
+  const candidates = mode === 'list' ? [...new Set(list(body.candidates).map(Number))] : [];
   if (candidates.some((id) => !person(id))) bad('مرشح غير موجود في اللائحة');
   if (mode === 'list' && candidates.length < 2) bad('يجب اختيار مرشحين اثنين على الأقل');
+  const allowed = mode === 'list' ? allowedCandidates(String(body.kind || ''), existing && existing.id) : null;
+  if (allowed && candidates.some((id) => !allowed.ids.includes(id))) {
+    bad(`المرشحون في هذه الجولة يجب أن يكونوا من المحتفظ بهم في «${allowed.title}»`);
+  }
   const min = intIn(body.min, 1, 20, 'الحد الأدنى');
   const max = intIn(body.max, min, 20, 'الحد الأقصى');
   if (mode === 'list' && max > candidates.length) bad('الحد الأقصى أكبر من عدد المرشحين');
@@ -130,8 +186,9 @@ function handle(method, url, body, session) {
       s = { role: 'supervisor', team: 'المشرف' };
     } else {
       if (String(body.code || '') !== db.settings.teamCode) bad('الرمز غير صحيح', 401);
-      const team = String(body.team || '').trim().slice(0, 30) || bad('اسم الفريق فارغ');
-      s = { role: 'team', team };
+      const device = String(body.device || '');
+      if (!/^[A-Za-z0-9_-]{8,64}$/.test(device)) bad('معرف الحاسوب غير صالح');
+      s = { role: 'team', team: teamFor(device).name };
     }
     const token = crypto.randomBytes(24).toString('hex');
     db.sessions[token] = s;
@@ -146,19 +203,24 @@ function handle(method, url, body, session) {
     const openIds = new Set(open.map((r) => r.id));
     const mine = db.ballots.filter((b) => b.team === session.team && openIds.has(b.roundId));
     const counts = {};
-    for (const b of mine) counts[b.roundId] = (counts[b.roundId] || 0) + 1;
+    const cancelled = {};
+    for (const b of mine) {
+      const into = b.cancelled ? cancelled : counts;
+      into[b.roundId] = (into[b.roundId] || 0) + 1;
+    }
     return {
       team: session.team,
       rounds: open.map(({ id, title, mode, candidates, min, max }) => ({ id, title, mode, candidates, min, max })),
       people: db.people,
       counts,
+      cancelled,
       recent: mine.slice(-15).reverse(),
     };
   }
 
   if (route === 'POST /people') {
     any();
-    const p = addPerson(body.name, session.role === 'supervisor' && body.isMember);
+    const p = session.role === 'supervisor' ? addPerson(body.name, !!body.isMember) : addPerson(body.name, false, session.team);
     save();
     return p;
   }
@@ -167,14 +229,31 @@ function handle(method, url, body, session) {
     any();
     const r = round(Number(body.roundId));
     if (r.status !== 'open') bad('هذه الجولة غير مفتوحة للإدخال');
-    const choices = [...new Set((body.choices || []).map(Number))];
-    if (choices.length !== (body.choices || []).length) bad('اسم مكرر في نفس الورقة');
-    if (choices.length < r.min || choices.length > r.max) bad(`عدد الأسماء يجب أن يكون بين ${r.min} و ${r.max}. الورقة ملغاة: تسلم للمشرف`);
-    for (const c of choices) {
-      if (!person(c)) bad('اسم غير موجود');
-      if (r.mode === 'list' && !r.candidates.includes(c)) bad('اسم خارج لائحة المرشحين');
+    if (body.cancelled === true) {
+      // A cancelled paper: recorded so it is counted per team and in total, gives no vote.
+      const b = { id: ++db.seq.b, roundId: r.id, team: session.team, choices: [], cancelled: true, at: Date.now() };
+      db.ballots.push(b);
+      save();
+      return b;
+    }
+    const written = list(body.choices).map(Number);
+    // Names written on the paper that are not candidates of this round: the team
+    // counts them (body.ignored) without having to type them.
+    let ignored = body.ignored === undefined ? 0 : intIn(body.ignored, 0, 20, 'الأسماء الخارجة عن اللائحة');
+    if (written.length + ignored > 20) bad('عدد الأسماء في الورقة كبير جدا');
+    for (const c of written) if (!person(c)) bad('اسم غير موجود');
+    // A name that is not a candidate, or is written more than once, is removed from
+    // the paper as if it was never written. The limits are then checked on the rest.
+    const outside = r.mode === 'list' ? written.filter((c) => !r.candidates.includes(c)) : [];
+    ignored += outside.length;
+    const { kept: choices, dropped } = splitDuplicates(written.filter((c) => !outside.includes(c)));
+    if (choices.length < r.min || choices.length > r.max) {
+      bad((dropped.length || ignored ? `بعد حذف الأسماء المكررة أو الخارجة عن اللائحة يبقى ${choices.length} من الأسماء. ` : '')
+        + `عدد الأسماء يجب أن يكون بين ${r.min} و ${r.max}. الورقة ملغاة: سجلها بزر «ورقة ملغاة»`);
     }
     const b = { id: ++db.seq.b, roundId: r.id, team: session.team, choices, at: Date.now() };
+    if (dropped.length) b.dropped = dropped;
+    if (ignored) b.ignored = ignored;
     db.ballots.push(b);
     save();
     return b;
@@ -203,10 +282,20 @@ function handle(method, url, body, session) {
         expected: db.settings.expected, present: db.settings.present, teamCode: db.settings.teamCode,
         absolute: majority(db.settings.expected), presentMajority: majority(db.settings.present),
       },
-      people: db.people.map((p) => ({ ...p, used: used.has(p.id) })),
+      people: db.people.map((p) => ({ ...p, used: used.has(p.id), papers: db.ballots.filter((b) => b.choices.includes(p.id)).length })),
+      teams: [...new Set([...db.teams.map((t) => t.name), ...db.ballots.map((b) => b.team)])]
+        .map((name) => {
+          const mine = db.ballots.filter((b) => b.team === name);
+          const cancelled = mine.filter((b) => b.cancelled).length;
+          return { name, ballots: mine.length - cancelled, cancelled };
+        }),
       rounds: db.rounds.map((r) => {
         const perTeam = {};
-        for (const b of db.ballots) if (b.roundId === r.id) perTeam[b.team] = (perTeam[b.team] || 0) + 1;
+        for (const b of db.ballots) {
+          if (b.roundId !== r.id) continue;
+          const t = perTeam[b.team] || (perTeam[b.team] = { valid: 0, cancelled: 0 });
+          t[b.cancelled ? 'cancelled' : 'valid']++;
+        }
         return { ...r, results: resultsFor(r), perTeam };
       }),
     };
@@ -243,19 +332,40 @@ function handle(method, url, body, session) {
     const from = person(Number(body.from)) || bad('الاسم غير موجود', 404);
     const to = person(Number(body.to)) || bad('الاسم غير موجود', 404);
     if (from === to) bad('لا يمكن دمج الاسم في نفسه');
-    const swap = (list) => [...new Set(list.map((c) => (c === from.id ? to.id : c)))];
-    for (const b of db.ballots) b.choices = swap(b.choices);
-    for (const r of db.rounds) r.candidates = swap(r.candidates);
+    const swap = (ids) => ids.map((c) => (c === from.id ? to.id : c));
+    for (const r of db.rounds) r.candidates = [...new Set(swap(r.candidates))];
+    // A paper that had both spellings now has the same name twice: the duplicate
+    // rule applies, and a paper left under the minimum becomes a cancelled paper.
+    const cancelled = {};
+    for (const b of db.ballots) {
+      if (b.cancelled) continue;
+      const { kept, dropped } = splitDuplicates(swap(b.choices));
+      b.choices = kept;
+      b.dropped = [...new Set(swap(b.dropped || []))].filter((id) => !kept.includes(id));
+      if (dropped.length) b.dropped = [...new Set([...b.dropped, ...dropped])];
+      if (!b.dropped.length) delete b.dropped;
+      const r = db.rounds.find((x) => x.id === b.roundId);
+      if (r && kept.length < r.min) {
+        cancelled[r.title] = (cancelled[r.title] || 0) + 1;
+        Object.assign(b, { choices: [], cancelled: true, cancelledByMerge: true });
+        delete b.dropped;
+        delete b.ignored;
+      }
+    }
     db.people = db.people.filter((p) => p !== from);
     save();
-    return { ok: true };
+    return { ok: true, cancelled };
   }
 
   if (seg[0] === 'people' && id) {
     sup();
     const p = person(id) || bad('الاسم غير موجود', 404);
     if (method === 'PATCH') {
-      if (body.isMember !== undefined) p.isMember = !!body.isMember;
+      if (body.isMember !== undefined) {
+        // Accepting or rejecting a name added by a team settles it.
+        p.isMember = !!body.isMember;
+        delete p.pending;
+      }
       if (body.name !== undefined) {
         const name = String(body.name).replace(/\s+/g, ' ').trim() || bad('الاسم فارغ');
         if (db.people.some((x) => x !== p && norm(x.name) === norm(name))) bad('هذا الاسم موجود مسبقا');
@@ -290,6 +400,8 @@ function handle(method, url, body, session) {
     if (method === 'PATCH') {
       if (body.status !== undefined) {
         if (!['draft', 'open', 'closed'].includes(body.status)) bad('حالة غير صالحة');
+        if (body.status === 'closed' && r.status !== 'closed') r.frozen = countsNow();
+        if (body.status !== 'closed') delete r.frozen;
         r.status = body.status;
       }
       if (body.published !== undefined) r.published = !!body.published;
@@ -316,7 +428,8 @@ function handle(method, url, body, session) {
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 
 function serveStatic(req, res) {
-  let p = decodeURIComponent(req.url.split('?')[0]);
+  let p;
+  try { p = decodeURIComponent(req.url.split('?')[0]); } catch { res.writeHead(400).end(); return; }
   if (p === '/') p = '/index.html';
   if (!path.extname(p)) p += '.html';
   const file = path.join(PUBLIC, path.normalize(p));
@@ -330,7 +443,7 @@ function serveStatic(req, res) {
   });
 }
 
-http.createServer((req, res) => {
+function onRequest(req, res) {
   if (!req.url.startsWith('/api/')) return serveStatic(req, res);
   const chunks = [];
   let size = 0;
@@ -353,12 +466,43 @@ http.createServer((req, res) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(out));
   });
-}).listen(PORT, '0.0.0.0', () => {
-  console.log(`\nVote counting app is running.\n  This computer:  http://localhost:${PORT}`);
-  for (const list of Object.values(os.networkInterfaces())) {
+}
+
+// HTTPS is used when a certificate exists (create it with ./make-cert.sh).
+const CERT_DIR = process.env.CERT_DIR || path.join(__dirname, 'certs');
+const certFile = path.join(CERT_DIR, 'cert.pem');
+const keyFile = path.join(CERT_DIR, 'key.pem');
+const secure = fs.existsSync(certFile) && fs.existsSync(keyFile);
+const scheme = secure ? 'https' : 'http';
+
+let server;
+if (secure) {
+  const tls = require('https').createServer({ cert: fs.readFileSync(certFile), key: fs.readFileSync(keyFile) }, onRequest);
+  // Same port for both: someone who types http:// is sent to https://.
+  const redirect = http.createServer((req, res) => {
+    res.writeHead(307, { Location: `https://${req.headers.host || 'localhost:' + PORT}${req.url}` }).end();
+  });
+  server = require('net').createServer((socket) => {
+    socket.on('error', () => {});
+    socket.once('data', (first) => {
+      socket.pause();
+      socket.unshift(first);
+      (first[0] === 22 ? tls : redirect).emit('connection', socket); // 22 = TLS handshake
+      process.nextTick(() => socket.resume());
+    });
+  });
+} else {
+  server = http.createServer(onRequest);
+}
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`\nVote counting app is running${secure ? ' (HTTPS)' : ''}.\n  This computer:  ${scheme}://localhost:${PORT}`);
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+    if (/^(docker|br-|veth|virbr)/.test(name)) continue;
     for (const a of list || []) {
-      if (a.family === 'IPv4' && !a.internal) console.log(`  Other computers: http://${a.address}:${PORT}`);
+      if (a.family === 'IPv4' && !a.internal) console.log(`  Other computers: ${scheme}://${a.address}:${PORT}`);
     }
   }
+  if (!secure) console.log('\n  For HTTPS, run ./make-cert.sh then start again.');
   console.log('\n  Counting teams: /team   Supervisor: /admin   Public results: /\n');
 });

@@ -20,27 +20,41 @@ const app = $('#app');
 let state = null;      // last server state
 let roundId = null;    // round being entered
 let picks = [];        // ids chosen for the ballot in progress
+let dups = new Set();  // ids written more than once on this paper: not counted
+let outside = 0;       // names on the paper that are not candidates: not counted
 let picker = null;
 let saving = false;
 
 const byId = (id) => state.people.find((p) => p.id === id);
 const current = () => state.rounds.find((r) => r.id === roundId);
 
+// A random id kept in this browser, so this computer always gets the same team.
+let memoryDevice = null;
+function deviceId() {
+  let id = null;
+  try { id = localStorage.getItem('device_id'); } catch {}
+  if (!id) {
+    id = memoryDevice || Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+    memoryDevice = id;
+    try { localStorage.setItem('device_id', id); } catch {}
+  }
+  return id;
+}
+
 function showLogin() {
   $('#logout').hidden = true;
   $('#who').textContent = '';
-  const team = h('select', {}, Array.from({ length: 10 }, (_, i) => h('option', {}, `الفريق ${i + 1}`)));
   const code = h('input', { type: 'password', autocomplete: 'off' });
   const form = h('form', { class: 'card login', onsubmit: async (e) => {
     e.preventDefault();
     try {
-      const s = await api('POST', '/login', { role: 'team', team: team.value, code: code.value });
+      const s = await api('POST', '/login', { role: 'team', device: deviceId(), code: code.value });
       setToken(s.token);
       refresh(true);
     } catch (err) { toast(err.message, 'err'); }
   } },
     h('h2', {}, 'دخول فريق الفرز'),
-    h('div', { class: 'field' }, h('label', {}, 'الفريق'), team),
+    h('p', { class: 'muted' }, 'كل حاسوب يمثل فريقا: يحصل هذا الحاسوب تلقائيا على رقم فريق خاص به.'),
     h('div', { class: 'field' }, h('label', {}, 'رمز الفرق (يسلمه المشرف)'), code),
     h('button', { class: 'primary big' }, 'دخول'));
   app.replaceChildren(form);
@@ -51,10 +65,20 @@ async function refresh(full) {
   if (!getToken()) return showLogin();
   try {
     const prevRounds = state && JSON.stringify(state.rounds);
+    const prevIds = state ? new Set(state.rounds.map((r) => r.id)) : null;
     state = await api('GET', '/team/state');
+    // Tell a team busy on one round that another one has just opened.
+    const opened = prevIds ? state.rounds.filter((r) => !prevIds.has(r.id) && r.id !== roundId) : [];
+    if (opened.length && current()) toast(`جولة جديدة مفتوحة: ${opened.map((r) => r.title).join(' ، ')}. للانتقال إليها اضغط «تغيير الجولة».`, 'err');
     $('#who').textContent = state.team;
     $('#logout').hidden = false;
-    if (!current()) { roundId = state.rounds.length === 1 ? state.rounds[0].id : null; picks = []; full = true; }
+    if (!current()) {
+      // The round being entered was closed: say so if a paper was in progress.
+      if (roundId && (picks.length || outside)) toast('أغلق المشرف الجولة التي كنت تدخلها: الورقة الجارية لم تحفظ.', 'err');
+      roundId = state.rounds.length === 1 ? state.rounds[0].id : null;
+      clearPaper();
+      full = true;
+    }
     if (full || prevRounds !== JSON.stringify(state.rounds)) render(); else renderSide();
   } catch (err) {
     if (err.status === 401) { setToken(null); showLogin(); }
@@ -70,7 +94,7 @@ function render() {
   }
   if (!r) {
     app.replaceChildren(h('div', { class: 'card' }, h('h2', {}, 'اختر الجولة'),
-      state.rounds.map((x) => h('p', {}, h('button', { class: 'big', onclick: () => { roundId = x.id; picks = []; render(); } }, x.title)))));
+      state.rounds.map((x) => h('p', {}, h('button', { class: 'big', onclick: () => { roundId = x.id; clearPaper(); render(); } }, x.title)))));
     return;
   }
   const rule = r.min === r.max ? `${r.min} بالضبط` : `من ${r.min} إلى ${r.max}`;
@@ -78,11 +102,12 @@ function render() {
     h('div', { class: 'row' },
       h('h2', { class: 'grow' }, r.title),
       state.rounds.length > 1 && h('button', { class: 'small', onclick: () => { roundId = null; render(); } }, 'تغيير الجولة')),
-    h('p', { class: 'muted' }, `عدد الأسماء في كل ورقة: ${rule}. الورقة التي لا تحترم ذلك أو غير الواضحة تعتبر ملغاة وتسلم للمشرف.`),
+    h('p', { class: 'muted' }, `عدد الأسماء في كل ورقة: ${rule}. الورقة التي لا تحترم ذلك أو غير الواضحة تعتبر ملغاة: سجلها بزر «ورقة ملغاة».`),
     h('div', { id: 'entry' }),
     h('div', { class: 'row' },
       h('button', { class: 'primary big', id: 'save', onclick: saveBallot }, 'حفظ الورقة (Enter)'),
-      h('button', { onclick: () => { picks = []; renderEntry(); } }, 'مسح'),
+      h('button', { onclick: () => { clearPaper(); renderEntry(); } }, 'مسح'),
+      h('button', { class: 'danger', onclick: saveCancelled }, 'ورقة ملغاة'),
       h('span', { class: 'muted', id: 'hint' })));
   app.replaceChildren(entry, h('div', { class: 'card', id: 'side' }));
   picker = null;
@@ -90,23 +115,34 @@ function render() {
   renderSide();
 }
 
+const counted = () => picks.filter((id) => !dups.has(id));
+const clearPaper = () => { picks = []; dups = new Set(); outside = 0; };
+const setOutside = (n) => { outside = Math.max(0, Math.min(20, n)); renderEntry(); };
+
 function renderEntry() {
   const r = current();
   const box = $('#entry');
   if (!r || !box) return;
   if (r.mode === 'list') {
     box.replaceChildren(h('div', { class: 'cands' }, r.candidates.map((id, i) => h('button', {
-      class: 'cand' + (picks.includes(id) ? ' on' : ''), onclick: () => toggle(id),
-    }, h('kbd', {}, i + 1), byId(id)?.name))),
+      class: 'cand' + (dups.has(id) ? ' dup' : picks.includes(id) ? ' on' : ''), onclick: () => toggle(id),
+    }, h('kbd', {}, i + 1), byId(id)?.name, dups.has(id) && h('span', { class: 'badge warn' }, 'مكرر: لا يحتسب')))),
+    picks.length ? h('div', { class: 'row muted' }, 'اسم مكتوب مرتين في الورقة؟',
+      picks.map((id) => h('button', { class: 'small' + (dups.has(id) ? ' primary' : ''), onclick: () => markDup(id) },
+        `${dups.has(id) ? '✓ ' : ''}${byId(id)?.name} مكرر`))) : '',
+    h('div', { class: 'row muted' }, 'اسم في الورقة ليس من المرشحين؟',
+      h('button', { class: 'small', onclick: () => setOutside(outside + 1) }, '＋ اسم خارج اللائحة (0)'),
+      outside > 0 && h('span', { class: 'badge warn' }, `لا تحتسب: ${outside}`),
+      outside > 0 && h('button', { class: 'small', onclick: () => setOutside(outside - 1) }, '−')),
     h('p', { class: 'muted' }, 'اضغط على رقم المرشح في لوحة المفاتيح لاختياره، ثم Enter لحفظ الورقة.'));
   } else {
     if (!picker) {
       picker = namePicker({
         people: () => state.people,
-        exclude: () => new Set(picks),
+        exclude: () => dups,
         onPick: (p) => addPick(p.id),
         onCreate: async (text) => {
-          if (!confirm(`الاسم «${text}» غير موجود في اللائحة. هل تريد إضافته كاسم جديد (غير عضو)؟`)) return picker.focus();
+          if (!confirm(`الاسم «${text}» غير موجود في اللائحة. هل تريد إضافته؟ لن تحتسب أصواته حتى يصادق عليه المشرف.`)) return picker.focus();
           try {
             const p = await api('POST', '/people', { name: text });
             if (!byId(p.id)) state.people.push(p);
@@ -114,36 +150,51 @@ function renderEntry() {
           } catch (err) { toast(err.message, 'err'); }
         },
         onEmptyEnter: saveBallot,
-        onEmptyBackspace: () => { picks.pop(); renderEntry(); },
+        onEmptyBackspace: () => { const id = picks.pop(); dups.delete(id); renderEntry(); },
       });
       box.replaceChildren(picker.el, h('div', { class: 'chips', id: 'chips' }));
     }
     $('#chips').replaceChildren(...picks.map((id, i) => {
       const p = byId(id);
-      return h('span', { class: 'chip' + (p.isMember ? '' : ' nonmember') }, `${i + 1}. ${p.name}`,
-        !p.isMember && ' (غير عضو)',
-        h('button', { title: 'حذف', onclick: () => { picks = picks.filter((x) => x !== id); renderEntry(); } }, '×'));
+      const dup = dups.has(id);
+      return h('span', { class: 'chip' + (dup ? ' dup' : p.isMember ? '' : ' nonmember') }, `${i + 1}. ${p.name}`,
+        dup ? ' (مكرر: لا يحتسب)' : !p.isMember && (p.pending ? ' (في انتظار مصادقة المشرف)' : ' (غير عضو)'),
+        h('button', { title: dup ? 'ليس مكررا' : 'حذف', onclick: () => {
+          if (dup) dups.delete(id); else picks = picks.filter((x) => x !== id);
+          renderEntry();
+        } }, '×'));
     }));
     picker.focus();
   }
-  const ok = picks.length >= r.min && picks.length <= r.max;
-  $('#save').disabled = !ok;
-  $('#hint').textContent = `الأسماء المختارة: ${picks.length}`;
+  const n = counted().length;
+  $('#save').disabled = !(n >= r.min && n <= r.max);
+  $('#hint').textContent = `الأسماء المحتسبة: ${n}` + (dups.size ? ` · أسماء مكررة لا تحتسب: ${dups.size}` : '')
+    + (outside ? ` · أسماء خارج اللائحة لا تحتسب: ${outside}` : '');
 }
 
 function addPick(id) {
   const r = current();
-  if (picks.includes(id)) return;
-  if (picks.length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فهي ملغاة.`, 'err');
+  if (picks.includes(id)) return markDup(id);
+  if (counted().length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فهي ملغاة: سجلها بزر «ورقة ملغاة».`, 'err');
   picks.push(id);
+  renderEntry();
+}
+
+// The same name written a second time: it is no longer counted on this paper.
+function markDup(id) {
+  if (dups.has(id)) dups.delete(id);
+  else {
+    dups.add(id);
+    toast(`«${byId(id)?.name}» مكتوب أكثر من مرة: لا يحتسب في هذه الورقة`, 'err');
+  }
   renderEntry();
 }
 
 function toggle(id) {
   const r = current();
-  if (picks.includes(id)) picks = picks.filter((x) => x !== id);
-  else if (r.max === 1) picks = [id];
-  else if (picks.length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فهي ملغاة.`, 'err');
+  if (picks.includes(id)) { picks = picks.filter((x) => x !== id); dups.delete(id); }
+  else if (r.max === 1) { picks = [id]; dups = new Set(); }
+  else if (counted().length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فهي ملغاة: سجلها بزر «ورقة ملغاة».`, 'err');
   else picks.push(id);
   renderEntry();
 }
@@ -151,12 +202,35 @@ function toggle(id) {
 async function saveBallot() {
   const r = current();
   if (!r || saving) return;
-  if (picks.length < r.min) return toast(`يجب إدخال ${r.min} أسماء على الأقل. إذا كانت الورقة تضم أقل فهي ملغاة وتسلم للمشرف.`, 'err');
+  const n = counted().length;
+  if (n < r.min) {
+    const why = (dups.size || outside ? `بعد حذف الأسماء المكررة أو الخارجة عن اللائحة يبقى ${n}. ` : '')
+      + `يجب ${r.min} أسماء على الأقل: الورقة ملغاة.`;
+    if (picks.length || outside) { if (confirm(`${why}\nتسجيلها كورقة ملغاة؟`)) saveCancelled(); }
+    else toast(why + ' لتسجيلها اضغط «ورقة ملغاة».', 'err');
+    return;
+  }
   saving = true;
   try {
-    await api('POST', '/ballots', { roundId: r.id, choices: picks });
-    picks = [];
+    // Duplicated names are sent twice, so the server applies the same rule.
+    await api('POST', '/ballots', { roundId: r.id, choices: [...picks, ...dups], ignored: r.mode === 'list' ? outside : 0 });
+    clearPaper();
     toast('تم حفظ الورقة ✓');
+    await refresh();
+    renderEntry();
+  } catch (err) { toast(err.message, 'err'); }
+  saving = false;
+}
+
+// Records the paper in hand as cancelled: counted for this team and in the total.
+async function saveCancelled() {
+  const r = current();
+  if (!r || saving) return;
+  saving = true;
+  try {
+    await api('POST', '/ballots', { roundId: r.id, cancelled: true });
+    clearPaper();
+    toast('تم تسجيل ورقة ملغاة ✓');
     await refresh();
     renderEntry();
   } catch (err) { toast(err.message, 'err'); }
@@ -169,9 +243,11 @@ function renderSide() {
   if (!side || !r) return;
   const mine = state.recent.filter((b) => b.roundId === r.id);
   side.replaceChildren(
-    h('h2', {}, `أوراق أدخلها ${state.team} في هذه الجولة: ${state.counts[r.id] || 0}`),
+    h('h2', {}, `أوراق ${state.team} في هذه الجولة: ${state.counts[r.id] || 0} صحيحة · ${state.cancelled[r.id] || 0} ملغاة`),
     mine.length ? h('table', {}, h('tbody', {}, mine.map((b) => h('tr', {},
-      h('td', {}, b.choices.map((id) => byId(id)?.name).join(' ، ')),
+      h('td', {}, b.cancelled ? h('span', { class: 'badge warn' }, 'ورقة ملغاة') : b.choices.map((id) => byId(id)?.name).join(' ، '),
+        b.dropped && h('span', { class: 'badge warn' }, `مكرر لا يحتسب: ${b.dropped.map((id) => byId(id)?.name).join(' ، ')}`),
+        b.ignored && h('span', { class: 'badge warn' }, `أسماء خارج اللائحة لا تحتسب: ${b.ignored}`)),
       h('td', { style: 'width:90px' }, h('button', { class: 'small danger', onclick: async () => {
         if (!confirm('حذف هذه الورقة؟')) return;
         try { await api('DELETE', '/ballots/' + b.id); toast('تم الحذف'); refresh(); } catch (err) { toast(err.message, 'err'); }
@@ -185,14 +261,15 @@ document.addEventListener('keydown', (e) => {
   if (r.mode === 'list' && e.target.tagName !== 'INPUT') {
     // Accept both Latin and Arabic-Indic digits.
     const n = '123456789'.indexOf(e.key) + 1 || '١٢٣٤٥٦٧٨٩'.indexOf(e.key) + 1;
-    if (n && r.candidates[n - 1]) { toggle(r.candidates[n - 1]); e.preventDefault(); }
+    if (e.key === '0' || e.key === '٠') { setOutside(outside + 1); e.preventDefault(); }
+    else if (n && r.candidates[n - 1]) { toggle(r.candidates[n - 1]); e.preventDefault(); }
     else if (e.key === 'Enter') { e.preventDefault(); saveBallot(); }
   }
 });
 
 $('#logout').onclick = () => { setToken(null); state = null; showLogin(); };
 refresh(true);
-setInterval(() => { if (getToken() && state) refresh(); }, 5000);
+setInterval(() => { if (getToken() && state) refresh(); }, 3000);
 </script>
 </body>
 </html>

@@ -1,2 +1,5 @@
 data/
 node_modules/
+certs/
+server.log
+e2e/out/

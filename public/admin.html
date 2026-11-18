@@ -18,6 +18,7 @@
     <button data-tab="people">لائحة الأعضاء</button>
     <button data-tab="settings">الإعدادات</button>
   </div>
+  <div id="pending"></div>
   <div id="app"></div>
 </main>
 <dialog id="dlg"></dialog>
@@ -45,7 +46,38 @@ const act = async (fn, okMsg) => {
 };
 
 // ---------- login / first setup ----------
+// Notice of names added by the teams, shown on every tab until each one is decided.
+let pendingKey = '';
+let pendingSeen = null;
+function renderPending() {
+  const list = state ? state.people.filter((p) => p.pending) : [];
+  document.title = (list.length ? `(${list.length}) ` : '') + 'المشرف على الفرز';
+  if (pendingSeen && list.some((p) => !pendingSeen.has(p.id))) {
+    toast(`اسم جديد يحتاج إلى قرارك: ${list.filter((p) => !pendingSeen.has(p.id)).map((p) => p.name).join(' ، ')}`, 'err');
+  }
+  pendingSeen = new Set(list.map((p) => p.id));
+  const key = JSON.stringify(list);
+  if (key === pendingKey) return;
+  pendingKey = key;
+  const decide = (p, isMember) => act(() => api('PATCH', '/people/' + p.id, { isMember }),
+    isMember ? `تمت المصادقة على «${p.name}»: تحتسب أصواته الآن` : `تم رفض «${p.name}»: لا تحتسب أصواته`);
+  $('#pending').replaceChildren(...(list.length ? [h('section', { class: 'card alert noprint' },
+    h('h2', {}, `أسماء جديدة أضافتها فرق الفرز (${list.length}): تحتاج إلى قرارك`),
+    h('p', { class: 'muted' }, 'هذه الأسماء غير موجودة في لائحة الأعضاء. لا تحتسب أصواتها حتى تصادق عليها. إذا كان الاسم مكتوبا بطريقة أخرى لعضو موجود، استعمل «نفس عضو موجود».'),
+    h('table', {}, h('tbody', {}, list.map((p) => h('tr', {},
+      h('td', {}, h('b', {}, p.name), h('div', { class: 'muted' }, `أضافه ${p.addedBy || '؟'} · ورد في ${p.papers} ورقة`)),
+      h('td', { class: 'row', style: 'justify-content:flex-end' },
+        h('button', { class: 'small primary', onclick: () => decide(p, true) }, 'مصادقة: عضو'),
+        h('button', { class: 'small danger', onclick: () => {
+          if (confirm(`رفض «${p.name}»؟ لن تحتسب أصواته.`)) decide(p, false);
+        } }, 'رفض: ليس عضوا'),
+        h('button', { class: 'small', onclick: () => mergeDialog(p) }, 'نفس عضو موجود')))))))] : []));
+}
+
 async function showLogin() {
+  $('#pending').replaceChildren();
+  pendingKey = '';
+  pendingSeen = null;
   $('#tabs').hidden = true;
   $('#logout').hidden = true;
   const pub = await api('GET', '/public').catch(() => ({ ready: true }));
@@ -75,6 +107,7 @@ async function refresh(force) {
     const next = await api('GET', '/admin/state');
     const changed = JSON.stringify(next) !== JSON.stringify(state);
     state = next;
+    renderPending();
     $('#tabs').hidden = false;
     $('#logout').hidden = false;
     // Live refresh only touches the results tab, so typing in forms is never interrupted.
@@ -98,7 +131,18 @@ function renderRounds() {
       h('div', { class: 'row' },
         h('div', { class: 'grow' },
           h('div', {}, `العدد المقرر حضورهم: ${s.expected} ← الأغلبية المطلقة: ${s.absolute}`),
-          h('div', {}, warn ? 'عدد الحاضرين لم يحدد بعد (من صفحة الإعدادات)' : `عدد الحاضرين: ${s.present} ← أغلبية الحاضرين: ${s.presentMajority}`),
+          h('form', { class: 'row', onsubmit: (e) => {
+            e.preventDefault();
+            act(() => api('PUT', '/settings', { present: Number(e.target.elements.present.value) }), 'تم تحديث عدد الحاضرين: يطبق على الجولات غير المغلقة');
+          } },
+            h('label', { style: 'margin:0' }, 'عدد الحاضرين الآن:'),
+            h('input', { type: 'number', name: 'present', min: 0, value: s.present }),
+            h('button', { class: 'small' }, 'تحديث'),
+            h('span', {}, warn ? 'لم يحدد بعد' : `← أغلبية الحاضرين: ${s.presentMajority}`)),
+          h('div', { class: 'muted' }, 'يمكن تغيير عدد الحاضرين في أي وقت: يطبق على الجولات المفتوحة أو التي لم تفتح بعد، ولا يغير نتائج الجولات المغلقة.'),
+          h('div', { class: 'muted' }, state.teams.length
+            ? `الفرق (حاسوب لكل فريق): ${state.teams.map((t) => `${t.name}: ${t.ballots} صحيحة، ${t.cancelled} ملغاة`).join(' | ')}`
+            : 'لم يدخل أي فريق بعد'),
           h('div', { class: 'muted' }, `الأسماء في اللائحة: ${state.people.length} (منهم ${state.people.filter((p) => p.isMember).length} عضوا)`)),
         h('button', { class: 'primary', onclick: () => roundDialog() }, '＋ جولة جديدة'),
         h('button', { onclick: () => window.print() }, 'طباعة النتائج'))),
@@ -110,8 +154,8 @@ function roundCard(r) {
   const res = r.results;
   const patch = (body, msg) => act(() => api('PATCH', '/rounds/' + r.id, body), msg);
   const voidInput = h('input', { type: 'number', min: 0, value: r.void });
-  const over = state.settings.present && res.total > state.settings.present;
-  const teams = Object.entries(r.perTeam).map(([t, n]) => `${t}: ${n}`).join(' | ');
+  const over = res.present && res.total > res.present;
+  const teams = Object.entries(r.perTeam).map(([t, n]) => `${t}: ${n.valid} صحيحة، ${n.cancelled} ملغاة`).join(' | ');
   const next = nextRound(r);
   return h('section', { class: 'card' },
     h('div', { class: 'row' },
@@ -119,10 +163,14 @@ function roundCard(r) {
         h('span', { class: 'badge ' + r.status }, STATUS[r.status]),
         r.published && h('span', { class: 'badge ok' }, 'منشورة للعموم')),
       h('div', { class: 'row noprint' },
-        r.status !== 'open' && h('button', { class: 'primary', onclick: () => patch({ status: 'open' }, 'الجولة مفتوحة للإدخال') }, r.status === 'closed' ? 'إعادة فتح الإدخال' : 'فتح الإدخال'),
+        r.status !== 'open' && h('button', { class: 'primary', onclick: () => {
+          if (r.status === 'closed' && (r.frozen?.present !== state.settings.present || r.frozen?.expected !== state.settings.expected)
+            && !confirm(`أغلقت هذه الجولة بعدد حاضرين ${r.frozen?.present}. عند إعادة فتحها تعتمد العدد الحالي (${state.settings.present}). متابعة؟`)) return;
+          patch({ status: 'open' }, 'الجولة مفتوحة للإدخال');
+        } }, r.status === 'closed' ? 'إعادة فتح الإدخال' : 'فتح الإدخال'),
         r.status === 'open' && h('button', { class: 'primary', onclick: () => patch({ status: 'closed' }, 'تم إغلاق الجولة') }, 'إغلاق الإدخال'),
         h('button', { onclick: () => patch({ published: !r.published }, r.published ? 'تم إخفاء النتيجة' : 'تم نشر النتيجة') }, r.published ? 'إخفاء عن العموم' : 'نشر النتيجة للعموم'),
-        !res.valid && h('button', { onclick: () => roundDialog(r) }, 'تعديل'),
+        !(res.valid + res.voidTeams) && h('button', { onclick: () => roundDialog(r) }, 'تعديل'),
         h('button', { onclick: () => ballotsDialog(r) }, 'الأوراق'),
         h('button', { class: 'danger', onclick: () => {
           if (confirm(`حذف الجولة «${r.title}» مع جميع أوراقها (${res.valid})؟ لا يمكن التراجع.`)) act(() => api('DELETE', '/rounds/' + r.id), 'تم الحذف');
@@ -130,29 +178,19 @@ function roundCard(r) {
     h('p', { class: 'muted' },
       `${r.mode === 'open' ? 'ترشيح حر من اللائحة' : `${r.candidates.length} مرشحين`} · كل ورقة: ${r.min === r.max ? r.min : `${r.min} إلى ${r.max}`} · المقاعد: ${r.seats} · ${THRESHOLDS[r.threshold]}`),
     h('div', { class: 'row noprint', style: 'margin-bottom:10px' },
-      h('label', { style: 'margin:0' }, 'عدد الأوراق الملغاة:'), voidInput,
+      h('label', { style: 'margin:0' }, 'أوراق ملغاة يضيفها المشرف:'), voidInput,
       h('button', { class: 'small', onclick: () => patch({ void: Number(voidInput.value) }, 'تم الحفظ') }, 'حفظ'),
-      teams && h('span', { class: 'muted' }, teams)),
+      teams && h('span', { class: 'muted' }, teams),
+      h('span', { class: 'muted' }, `مجموع الملغاة: ${res.void} (الفرق: ${res.voidTeams}، المشرف: ${res.voidManual})`)),
+    res.rows.some((x) => x.pending && x.votes) && h('div', { class: 'verdict warn' },
+      `أسماء في انتظار مصادقتك قد تغير هذه النتيجة: ${res.rows.filter((x) => x.pending && x.votes).map((x) => `${x.name} (${x.votes})`).join(' ، ')}`),
     over && h('div', { class: 'verdict warn' }, `تنبيه: مجموع الأوراق (${res.total}) أكبر من عدد الحاضرين (${state.settings.present}).`),
-    r.threshold === 'present' && !state.settings.present && h('div', { class: 'verdict warn' }, 'يجب تحديد عدد الحاضرين في الإعدادات لحساب أغلبية الحاضرين.'),
+    r.threshold === 'present' && res.thresholdMissing && h('div', { class: 'verdict warn' }, 'يجب تحديد عدد الحاضرين لحساب أغلبية الحاضرين.'),
+    h('p', { class: 'muted' }, r.frozen
+      ? `اعتمدت هذه الجولة عند إغلاقها: الحاضرون ${r.frozen.present}، المقرر حضورهم ${r.frozen.expected}. تغيير الأعداد لا يؤثر عليها.`
+      : `تعتمد هذه الجولة العدد الحالي: الحاضرون ${res.present}، المقرر حضورهم ${res.expected}. يجمد عند الإغلاق.`),
     h('div', { class: r.mode === 'open' ? 'scroll' : '' }, resultsView(r, res)),
     next && res.valid > 0 && h('p', { class: 'noprint' }, h('button', { class: 'primary', onclick: () => roundDialog(null, next) }, `إنشاء الجولة التالية: ${TEMPLATES[next.kind].label}`)));
-}
-
-// Suggest the follow-up round from the results; the supervisor can still edit everything.
-function nextRound(r) {
-  const rows = r.results.rows;
-  const elected = rows.filter((x) => x.status === 'elected');
-  const tied = rows.filter((x) => x.status === 'tied');
-  const ids = (list) => list.map((x) => x.id);
-  if (r.kind === 'nomination') return { kind: 'president', candidates: ids([...elected, ...tied]) };
-  if (r.kind === 'president' && !elected.length) return { kind: 'runoff', candidates: ids(runoffCandidates(r.results)) };
-  if ((r.kind === 'bureau' || r.kind === 'bureau2') && r.results.seatsLeft > 0) {
-    const n = r.results.seatsLeft;
-    const pool = tied.length ? tied : rows.filter((x) => x.status !== 'elected');
-    return { kind: 'bureau2', candidates: ids(pool), seats: n, max: Math.min(n, Math.max(pool.length, 1)) };
-  }
-  return null;
 }
 
 function roundDialog(existing, preset) {
@@ -172,21 +210,28 @@ function roundDialog(existing, preset) {
     const p = state.people.find((x) => x.id === id);
     return h('span', { class: 'chip' }, p ? p.name : '؟', h('button', { type: 'button', onclick: () => { cands = cands.filter((x) => x !== id); drawChips(); } }, '×'));
   }));
+  const allowed = () => (mode === 'list' ? allowedCandidates(state.rounds, kind.value, existing && existing.id) : null);
   const picker = namePicker({
-    people: () => state.people.filter((p) => p.isMember),
+    people: () => {
+      const a = allowed();
+      return state.people.filter((p) => p.isMember && (!a || a.ids.includes(p.id)));
+    },
     exclude: () => new Set(cands),
     onPick: (p) => { cands.push(p.id); drawChips(); picker.focus(); },
     placeholder: 'أضف مرشحا: اكتب الحروف الأولى من اسمه…',
   });
   const drawMode = () => {
     candBox.replaceChildren(...(mode === 'list'
-      ? [h('label', {}, 'لائحة المرشحين (من أعضاء الجمع العام)'), picker.el, chips]
+      ? [h('label', {}, allowed() ? `لائحة المرشحين (من المحتفظ بهم في «${allowed().title}» فقط)` : 'لائحة المرشحين (من أعضاء الجمع العام)'), picker.el, chips]
       : [h('p', { class: 'muted' }, 'في هذه الجولة يكتب كل عضو الأسماء بحرية، وتختارها فرق الفرز من لائحة الأعضاء.')]));
   };
   kind.onchange = () => {
     const t = TEMPLATES[kind.value];
     title.value = t.title; min.value = t.min; max.value = t.max; seats.value = t.seats; threshold.value = t.threshold;
     mode = t.mode;
+    // Drop names that are not allowed for the new type.
+    const a = allowed();
+    if (a) { cands = cands.filter((id) => a.ids.includes(id)); drawChips(); }
     drawMode();
   };
   drawMode();
@@ -224,7 +269,9 @@ async function ballotsDialog(r) {
     h('h2', {}, `أوراق الجولة: ${r.title} (${ballots.length})`),
     h('div', { class: 'scroll' }, h('table', {}, h('tbody', {}, ballots.slice().reverse().map((b) => h('tr', {},
       h('td', { class: 'muted' }, `#${b.id} · ${b.team}`),
-      h('td', {}, b.choices.map(name).join(' ، ')),
+      h('td', {}, b.cancelled ? h('span', { class: 'badge warn' }, b.cancelledByMerge ? 'ملغاة بعد الدمج' : 'ورقة ملغاة') : b.choices.map(name).join(' ، '),
+        b.dropped && h('span', { class: 'badge warn' }, `مكرر لا يحتسب: ${b.dropped.map(name).join(' ، ')}`),
+        b.ignored && h('span', { class: 'badge warn' }, `أسماء خارج اللائحة لا تحتسب: ${b.ignored}`)),
       h('td', {}, h('button', { class: 'small danger', onclick: () => {
         if (confirm('حذف هذه الورقة؟')) act(async () => { await api('DELETE', '/ballots/' + b.id); dlg.close(); }, 'تم حذف الورقة');
       } }, 'حذف'))))))),
@@ -242,7 +289,7 @@ function renderPeople() {
     const shown = filter ? searchPeople(state.people, filter, 500) : state.people;
     const sorted = shown.slice().sort((a, b) => a.isMember - b.isMember || a.name.localeCompare(b.name, 'ar'));
     listBox.replaceChildren(h('table', {}, h('tbody', {}, sorted.map((p) => h('tr', {},
-      h('td', {}, p.name, h('span', { class: 'badge ' + (p.isMember ? 'ok' : 'warn') }, p.isMember ? 'عضو' : 'غير عضو')),
+      h('td', {}, p.name, h('span', { class: 'badge ' + (p.isMember ? 'ok' : 'warn') }, p.isMember ? 'عضو' : p.pending ? 'في انتظار المصادقة' : 'غير عضو')),
       h('td', { class: 'row', style: 'justify-content:flex-end' },
         !p.isMember && h('button', { class: 'small primary', onclick: () => act(() => api('PATCH', '/people/' + p.id, { isMember: true }), 'تم اعتماده كعضو، وأصواته تحتسب الآن') }, 'اعتماده كعضو'),
         p.isMember && h('button', { class: 'small', onclick: () => {
@@ -290,12 +337,20 @@ function mergeDialog(from) {
   });
   dlg.replaceChildren(
     h('h2', {}, `دمج «${from.name}»`),
-    h('p', { class: 'muted' }, 'يستعمل عندما يكتب نفس الشخص بطريقتين. تنقل جميع أصوات هذا الاسم إلى الاسم الصحيح ثم يحذف.'),
+    h('p', { class: 'muted' }, 'يستعمل عندما يكتب نفس الشخص بطريقتين. تنقل جميع أصوات هذا الاسم إلى الاسم الصحيح ثم يحذف. إذا كانت ورقة تضم الكتابتين معا، يعتبر الاسم مكررا ولا يحتسب فيها.'),
     picker.el, chosen,
     h('div', { class: 'row', style: 'margin-top:160px' },
       h('button', { class: 'primary', onclick: () => {
         if (!target) return toast('اختر الاسم الصحيح أولا', 'err');
-        act(async () => { await api('POST', '/people/merge', { from: from.id, to: target.id }); dlg.close(); }, 'تم الدمج');
+        act(async () => {
+          const res = await api('POST', '/people/merge', { from: from.id, to: target.id });
+          dlg.close();
+          const lost = Object.entries(res.cancelled || {});
+          if (lost.length) {
+            toast('تم الدمج. أوراق أصبحت ملغاة بسبب تكرار الاسم (احتسبت تلقائيا ضمن الملغاة): '
+              + lost.map(([t, n]) => `${t}: ${n}`).join(' | '), 'err');
+          } else toast('تم الدمج');
+        });
       } }, 'دمج'),
       h('button', { onclick: () => dlg.close() }, 'إلغاء')));
   dlg.showModal();

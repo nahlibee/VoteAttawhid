@@ -18,16 +18,17 @@ The terminal prints the addresses to open. Three pages:
 | `/team` | Counting teams | Fast entry of voting papers |
 | `/` | Everyone (projector) | Results the supervisor has published |
 
-The first visit to `/admin` asks for two codes: one for the supervisor, one to give to the counting teams.
+The first visit to `/admin` asks you to choose the supervisor code. The supervisor then creates the counting teams, and each team gets its own code.
 
 All data is saved in `data/vote.json` after every action. A backup copy is made each time the server starts.
 
 ## On the day
 
 1. **Members** tab: paste the member list (one name per line, a column copied from Excel works).
-2. **Settings** tab: enter the number of members expected and the number present.
-3. **Rounds** tab: create a round, press "open", and the teams start entering papers. Close it when all papers are in (cancelled papers are recorded by the teams as they go), then publish.
-4. Each round offers a button that prepares the next one from its results (candidates already filled in).
+2. **Teams** tab: create one team per counting table and hand each team its code.
+3. **Settings** tab: enter the number of members expected and the number present.
+4. **Rounds** tab: create a round, press "open", and the teams start entering papers. Close it when all papers are in (cancelled papers are recorded by the teams as they go), then publish.
+5. Each round offers a button that prepares the next one from its results (candidates already filled in).
 
 ### Rounds
 
@@ -46,7 +47,8 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 - A name written twice (or more) on a paper, or a name that is not a candidate of the round, is removed from it entirely, as if it was never written. The paper then counts for the other names, unless too few remain, in which case it is cancelled.
 - A paper that is cancelled (too few or too many names, unreadable, blank…) is recorded by the team with the «ورقة ملغاة» button and the team moves on. Cancelled papers are counted per team, per round and in total; the supervisor can also add cancelled papers handed to them directly.
 - In the nomination round a team can add a name that is not on the list and carry on. The name waits for the supervisor, who gets a notice on the supervisor page and accepts it (its votes, including those already entered, count at once), rejects it (its votes never count), or merges it with an existing member. Until then its votes are not counted.
-- Each computer is one counting team: at its first login it gets the next team number by itself, and keeps it. A computer can join at any time, even during a round.
+- Only the supervisor creates teams. Each team logs in with its own 5-digit code, which the supervisor hands over in person. A team can be added at any time, even during a round.
+- If a code leaks, «رمز جديد» replaces it and logs that team out. A team with no papers can be deleted.
 - The approval of the two vice-presidents is counted on the podium and is not in the app.
 
 ### Entry shortcuts for the teams

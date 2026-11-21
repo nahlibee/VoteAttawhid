@@ -239,7 +239,6 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
   }, [sup]);
   await check('M02', 'Setup refuses a 3-character supervisor code', async () => {
     await sup.fill('input[type=password]', 'abc');
-    await sup.fill('input[type=text]', 'team1');
     await sup.click('button', 'حفظ ودخول');
     await sup.errToast('4 رموز');
     assert(await sup.ev(`!!document.querySelector('form.login')`), 'left the form');
@@ -267,6 +266,7 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
   }, [sup]);
   await check('M06', 'Each tab shows its screen and is highlighted', async () => {
     await tab('people'); assert((await sup.text('#app')).includes('إضافة عضو'), 'people screen');
+    await tab('teams'); assert((await sup.text('#app')).includes('إنشاء فريق'), 'teams screen');
     await tab('settings'); assert((await sup.text('#app')).includes('أعداد الجمع العام'), 'settings screen');
     await tab('rounds'); assert((await sup.text('#app')).includes('جولة جديدة'), 'rounds screen');
   }, [sup]);
@@ -290,9 +290,7 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     await tab('settings');
     assert(await sup.ev(`document.querySelectorAll('input[type=number]')[0].value === '10'`), 'value changed');
   }, [sup]);
-  await check('M09/M10', 'Team code changed; empty supervisor code keeps the old one', async () => {
-    await sup.ev(`(() => { const i = document.querySelectorAll('form')[1].querySelector('input[type=text]'); i.focus(); i.select(); return true; })()`);
-    await sup.keys([KEY.Backspace]); await sup.type('team2');
+  await check('M10', 'Empty supervisor code keeps the old one', async () => {
     await sup.ev(`(() => { document.querySelectorAll('form')[1].querySelector('button').click(); return true; })()`);
     await sup.toast('تم الحفظ');
     await sup.click('#logout');
@@ -399,13 +397,30 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     await sup.click('button', 'إلغاء');
   }, [sup]);
 
+  // ---------- teams created by the supervisor ----------
+  const codeOf = (name) => sup.ev(`api('GET', '/admin/state').then((s) => s.teams.find((t) => t.name === ${JSON.stringify(name)}).code)`);
+  let code1, code2;
+  await check('M09', 'Supervisor creates two teams, each with its own code', async () => {
+    await tab('teams');
+    await sup.click('button', '＋ إنشاء فريق');
+    await sup.toast('تم إنشاء الفريق');
+    await sup.waitFor(`document.querySelector('#app').textContent.includes('الفريق 1')`, 'team 1');
+    await sup.click('button', '＋ إنشاء فريق');
+    await sup.waitFor(`document.querySelector('#app').textContent.includes('الفريق 2')`, 'team 2');
+    code1 = await codeOf('الفريق 1');
+    code2 = await codeOf('الفريق 2');
+    assert(/^\d{5}$/.test(code1) && /^\d{5}$/.test(code2) && code1 !== code2, 'codes');
+    assert((await sup.text('#app')).includes(code1), 'code shown');
+    await tab('rounds');
+  }, [sup]);
+
   // ---------- team login before any round ----------
   await t1.goto(BASE + '/team');
-  await check('M47', 'Team login: wrong code refused, right code gives a team number', async () => {
+  await check('M47', 'Team login: wrong code refused, its own code gives its team', async () => {
     await t1.fill('input[type=password]', 'team1');
     await t1.click('button', 'دخول');
     await t1.errToast('الرمز غير صحيح');
-    await t1.fill('input[type=password]', 'team2');
+    await t1.fill('input[type=password]', code1);
     await t1.click('button', 'دخول');
     await t1.waitFor(`document.querySelector('#who').textContent === 'الفريق 1'`, 'header الفريق 1');
   }, [t1]);
@@ -413,12 +428,12 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     await t1.waitFor(`document.querySelector('#app').textContent.includes('لا توجد جولة مفتوحة')`, 'waiting message');
   }, [t1]);
   await t2.goto(BASE + '/team');
-  await check('M47b', 'Second computer gets another team; the first keeps its number after logging in again', async () => {
-    await t2.fill('input[type=password]', 'team2');
+  await check('M47b', 'The second code opens the second team; the first code still opens the first', async () => {
+    await t2.fill('input[type=password]', code2);
     await t2.click('button', 'دخول');
     await t2.waitFor(`document.querySelector('#who').textContent === 'الفريق 2'`, 'header الفريق 2');
     await t1.click('#logout');
-    await t1.fill('input[type=password]', 'team2');
+    await t1.fill('input[type=password]', code1);
     await t1.click('button', 'دخول');
     await t1.waitFor(`document.querySelector('#who').textContent === 'الفريق 1'`, 'still الفريق 1');
   }, [t1, t2]);
@@ -852,6 +867,31 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     await t2.click('#logout');
     await t2.waitFor(`!!document.querySelector('form.login')`, 'login form');
   }, [t2]);
+  await check('M63', 'New code: the team is logged out, the old code is refused, the new one works', async () => {
+    await tab('teams');
+    await sup.answers({ confirm: [true] });
+    await rowClick('الفريق 1', 'رمز جديد');
+    await sup.toast('تم إنشاء رمز جديد');
+    const fresh = await codeOf('الفريق 1');
+    assert(fresh !== code1, 'code unchanged');
+    await t1.waitFor(`!!document.querySelector('form.login')`, 'team logged out', 9000);
+    await t1.fill('input[type=password]', code1);
+    await t1.click('button', 'دخول');
+    await t1.errToast('الرمز غير صحيح');
+    await t1.fill('input[type=password]', fresh);
+    await t1.click('button', 'دخول');
+    await t1.waitFor(`document.querySelector('#who').textContent === 'الفريق 1'`, 'back in with the new code');
+  }, [sup, t1]);
+  await check('M64', 'Delete: offered only for a team without papers', async () => {
+    assert(!(await rowText('الفريق 1')).includes('حذف'), 'delete offered on a team with papers');
+    await sup.click('button', '＋ إنشاء فريق');
+    await sup.waitFor(`!!${row('الفريق 3')}`, 'team 3');
+    await sup.answers({ confirm: [true] });
+    await rowClick('الفريق 3', 'حذف');
+    await sup.toast('تم حذف الفريق');
+    await sup.waitFor(`!${row('الفريق 3')}`, 'team 3 gone');
+    await tab('rounds');
+  }, [sup]);
   await check('P1', 'Public page links lead to the team and supervisor pages', async () => {
     const l = await pub.ev(`[...document.querySelectorAll('header a')].map((a) => a.getAttribute('href'))`);
     assert(JSON.stringify(l) === JSON.stringify(['/team', '/admin']), JSON.stringify(l));

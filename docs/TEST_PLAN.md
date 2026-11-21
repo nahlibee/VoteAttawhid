@@ -8,8 +8,8 @@ This plan checks that the vote counting app gives correct results and that every
 |---|---|---|---|
 | Counting rules | Majorities, top five, draws, non-members | Automated, `test/results.test.js` | 32 |
 | Screen logic | Name search, result sentences, proposed next round, page scripts valid | Automated, `test/frontend.test.js` | 27 |
-| Server | Logins, permissions, one team per computer, paper entry, duplicate names, publishing, restart, HTTPS | Automated, `test/api.test.js` | 55 |
-| Buttons and keyboard | Every control on the three pages, with the election scenarios | Automated in Firefox, `e2e/ui-check.js` | 79 checks |
+| Server | Logins, permissions, team codes, paper entry, duplicate names, publishing, restart, HTTPS | Automated, `test/api.test.js` | 58 |
+| Buttons and keyboard | Every control on the three pages, with the election scenarios | Automated in Firefox, `e2e/ui-check.js` | 82 checks |
 | Full scenarios | A complete election, nominal and not | By hand, section 5 | 9 |
 | Event conditions | Several laptops, network, power | By hand, section 6 | 8 |
 
@@ -21,7 +21,7 @@ This plan checks that the vote counting app gives correct results and that every
 node e2e/ui-check.js
 ```
 
-Needs Firefox and openssl. Takes about 3 minutes. Expected last line: `79 passed, 0 failed`. Screenshots of any failure are saved in `e2e/out/`.
+Needs Firefox and openssl. Takes about 3 minutes. Expected last line: `82 passed, 0 failed`. Screenshots of any failure are saved in `e2e/out/`.
 
 ### Run the automated tests
 
@@ -29,7 +29,7 @@ Needs Firefox and openssl. Takes about 3 minutes. Expected last line: `79 passed
 node --test
 ```
 
-Expected last lines: `pass 114`, `fail 0`. It takes about one second. The tests start their own temporary server on a spare port with an empty data folder, so they never touch real votes and can run while the app is in use.
+Expected last lines: `pass 117`, `fail 0`. It takes about one second. The tests start their own temporary server on a spare port with an empty data folder, so they never touch real votes and can run while the app is in use.
 
 ### Rules of reference
 
@@ -47,11 +47,11 @@ Expected last lines: `pass 114`, `fail 0`. It takes about one second. The tests 
 | Draw | Announced with the names; the supervisor decides |
 | Name added by a team | Waits for the supervisor («في انتظار المصادقة»); not counted until accepted; rejected stays not counted |
 | Name written twice, or not a candidate | Removed from the paper entirely; the limits are then checked on the names left |
-| Teams | Each computer is one team, numbered automatically at its first login |
+| Teams | Created by the supervisor only; each team logs in with its own 5-digit code |
 
 ### Pass criteria
 
-- All 114 automated tests pass.
+- All 117 automated tests pass.
 - Every line of sections 4, 5 and 6 is marked OK, or the failure is understood and accepted in writing by the supervisor.
 - A rehearsal of section 5, scenario S1, has been done on the event laptops.
 
@@ -136,13 +136,15 @@ Expected last lines: `pass 114`, `fail 0`. It takes about one second. The tests 
 | A02 | F | Setup with codes that are too short | Refused |
 | A03 | N | Setup, then a second setup attempt | First accepted, second refused |
 | A04 | N/F | Supervisor login, right and wrong code | Accepted / refused |
-| A05 | N/F | Team login, right code, wrong code, no computer id | Accepted / refused; refused logins create no team |
-| A05b | N/A | Same computer logs in again; a new computer logs in; a computer claims another team's name | Same team; next team number; the claim is ignored |
-| A06 | F | A team calls each of the 10 supervisor actions | All refused |
+| A05 | N/F | Team login with a code created by the supervisor; wrong, empty or supervisor code | Accepted / refused; refused logins create no team |
+| A05b | N/A | Same code again; code typed with a space and Arabic digits; a browser claims another team's name | Same team; accepted; the claim is ignored |
+| A05c | N/F | New code for a team; delete a team | Old code and old login stop working; other teams not affected |
+| A06 | F | A team calls each of the 13 supervisor actions | All refused |
 | A07 | F | Entry without login, or with a false login | Refused |
+| A07b | F | Tokens such as `__proto__`, `constructor`, `toString` | Refused on every entry action |
 | A08 | F | Counts of 0, negative, decimal, text | Refused |
 | A09 | N | Counts 170 and 160 | Majorities 86 and 81 |
-| A10 | A | Change both codes | Old codes refused, new accepted, teams stay logged in |
+| A10 | A | Change the supervisor code | Old code refused, new accepted, teams stay logged in |
 | A11 | N | Import a list with blank lines, extra columns, a duplicate | 8 members added; second import adds 0 |
 | A12 | A | Add a name already present with another spelling | Not added twice |
 | A13 | F | Empty name, name over 80 characters | Refused |
@@ -157,7 +159,8 @@ Expected last lines: `pass 114`, `fail 0`. It takes about one second. The tests 
 | A20b | A | Name written twice or three times with 3 other names; 6 lines with one duplicate; two names each twice; unknown name twice | Name not counted, paper counts for the others; accepted with 4; refused; refused |
 | A21 | N | Papers with 3, 4, 5 names from two teams | Counted, per-team counts correct |
 | A22 | N | Each team's own counter and recent papers | Only its own |
-| A22b | A | A new computer joins in the middle of an open round | Becomes the next team; results and other teams' counts unchanged; its papers are its own |
+| A22b | A | The supervisor creates a team in the middle of an open round | It joins as the next team; results and other teams' counts unchanged; its papers are its own |
+| A22c | F | Delete a team that entered papers | Refused |
 | A23 | A | Non-member with votes, then added as member by the supervisor | Left out, then counted with the same votes, no duplicate |
 | A23b | A | Team name with 2 votes: waiting, rejected, written again, accepted | Not counted; rejected not counted and not asked again; accepted counted with its 2 votes |
 | A24 | A | Remove and give back membership | Result follows each change |
@@ -180,10 +183,10 @@ Expected last lines: `pass 114`, `fail 0`. It takes about one second. The tests 
 | A36b | A | Close a round at 160 present, change to 120, reopen it | Closed round still judged on 160 (81); open round now on 120 (61) and entry continues; reopened round follows 120 |
 | A37 | F | Broken request, unknown address, malformed address | Clean error; server keeps running |
 | A38 | N/F | Load the pages; ask for files outside the public folder | Served / not served |
-| A39 | N | Supervisor code in the data sent to browsers | Never present |
+| A39 | N | Codes in the data sent to browsers | Supervisor code never present; team codes sent to the supervisor only |
 | A40 | N | Stop and restart the server | Same data, logins kept, backup file created |
 | A41 | N | Delete a round | Its papers and public result are gone, other rounds intact |
-| A42 | A | Data saved by the earlier version (teams chosen by name, closed rounds without frozen counts) | Loads; computers already logged in keep working; a new computer gets a free team number; old closed rounds are frozen with the counts in force |
+| A42 | A | Data saved by the earlier version (one shared team code, closed rounds without frozen counts) | Loads; each team keeps its papers and gets its own code, saved across restarts; the shared code and old team logins stop working; old closed rounds are frozen with the counts in force |
 | H01 | N | Start with a certificate | Pages answer in HTTPS |
 | H02 | A | Open the `http://` address | Redirected to `https://` on the same port |
 | H03 | N | Setup and login over HTTPS | Work |
@@ -198,17 +201,17 @@ Do these in a browser on the event laptops. Write OK or KO in the last column. P
 
 | ID | Control | Action | Expected | Result |
 |---|---|---|---|---|
-| M01 | First setup form, «حفظ ودخول» | Enter a supervisor code and a team code | Enters the supervisor page | |
+| M01 | First setup form, «حفظ ودخول» | Enter a supervisor code | Enters the supervisor page | |
 | M02 | Same form | Supervisor code of 3 characters | Red message, stays on the form | |
 | M03 | «دخول» | Log out, log in with a wrong code, then the right one | Red message, then access | |
 | M04 | «خروج» | Click | Back to the login form | |
 | M05 | «صفحة النتائج العامة» | Click | Public page opens in a new tab | |
-| M06 | Tabs «الجولات والنتائج», «لائحة الأعضاء», «الإعدادات» | Click each | The matching screen shows; the tab is highlighted | |
+| M06 | Tabs «الجولات والنتائج», «لائحة الأعضاء», «فرق الفرز», «الإعدادات» | Click each | The matching screen shows; the tab is highlighted | |
 | M07 | Settings, first «حفظ» | Enter 170 and 160 | Message «تم الحفظ»; line shows 86 and 81 | |
 | M07b | «عدد الحاضرين الآن», «تحديث» (rounds tab) | Change the number while a round is open and another is closed | Open round's majority changes; the closed round's line still shows the count it was closed with | |
 | M07c | «إعادة فتح الإدخال» after changing the count | Reopen the closed round | Asked to confirm it will use the current count | |
 | M08 | Settings, first «حفظ» | Enter 0 as expected count | Refused with a red message | |
-| M09 | Settings, second «حفظ» | Change the team code | Saved; new code works on `/team` | |
+| M09 | «＋ إنشاء فريق» (teams tab) | Click twice | Two teams appear, each with its own 5-digit code | |
 | M10 | Settings, new supervisor code left empty | Save | Supervisor code unchanged | |
 | M11 | «إضافة اللائحة» | Paste 10 names, one per line | Message with the number added; list shows 10 | |
 | M12 | «إضافة اللائحة» | Paste the same list again | 0 added | |
@@ -250,13 +253,15 @@ Do these in a browser on the event laptops. Write OK or KO in the last column. P
 | M44 | «طباعة النتائج» | Click | Print preview shows results without buttons | |
 | M45 | Live update | Leave the rounds tab open while a team enters papers | Totals change within 3 seconds, without reloading | |
 | M46 | Warning | Enter more papers than the present count | Orange warning on the round | |
+| M63 | «رمز جديد» (teams tab) | Confirm on a logged-in team | The team is logged out; old code refused; new code works | |
+| M64 | «حذف» (teams tab) | On a team without papers; look at a team with papers | Removed after confirmation; no delete button | |
 
 ### Counting team page (`/team`)
 
 | ID | Control | Action | Expected | Result |
 |---|---|---|---|---|
-| M47 | «دخول» | Wrong code, then right code | Red message, then access; a team number appears in the header | |
-| M47b | One team per computer | Log in on a second computer; log out and in again on the first | Second computer gets another number; the first keeps its number | |
+| M47 | «دخول» | Wrong code, then the team's code | Red message, then access; the team's name appears in the header | |
+| M47b | One code per team | Log in with a second team's code; log out and in again with the first | Each code opens its own team | |
 | M47c | Team list for the supervisor | Look at the top of the rounds tab on `/admin` | Each team with its number of papers | |
 | M48 | No round open | Log in before any round is open | Message to wait; the page updates by itself when a round opens | |
 | M49 | Round buttons, «تغيير الجولة» | With two rounds open, pick one, then change | Entry screen of the chosen round | |
@@ -319,5 +324,5 @@ Use a small assembly so the numbers can be entered quickly: **10 members expecte
 - **Papers are not numbered**, so the app cannot detect the same paper entered twice. The only guard is the warning when the total exceeds the present count (M46). Each team should move entered papers to a separate box.
 - **A tied run-off and a tied draw re-vote have no automatic rule.** The app announces the draw with the names; the committee decides.
 - **The `https://` warning** appears on each device until `certs/ca.pem` is imported in its browser.
-- **A team is tied to the browser of its computer.** Clearing the browser data, or using another browser or a private window, makes that computer a new team; its earlier papers stay counted under the old number.
+- **A team code works on any computer.** Two computers using the same code count as the same team. This lets a team move to another laptop if one fails; a leaked code is replaced with «رمز جديد».
 - **Screens update every 3 seconds** (teams) and 3 seconds (supervisor). A team can still see a round for up to 3 seconds after it is closed; it is then told if a paper in progress was not saved.

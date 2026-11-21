@@ -16,6 +16,7 @@
   <div class="tabs" id="tabs" hidden>
     <button data-tab="rounds">الجولات والنتائج</button>
     <button data-tab="people">لائحة الأعضاء</button>
+    <button data-tab="teams">فرق الفرز</button>
     <button data-tab="settings">الإعدادات</button>
   </div>
   <div id="pending"></div>
@@ -82,20 +83,18 @@ async function showLogin() {
   $('#logout').hidden = true;
   const pub = await api('GET', '/public').catch(() => ({ ready: true }));
   const code = h('input', { type: 'password', autocomplete: 'off' });
-  const teamCode = h('input', { type: 'text', autocomplete: 'off' });
   const form = h('form', { class: 'card login', onsubmit: async (e) => {
     e.preventDefault();
     try {
-      if (!pub.ready) await api('POST', '/setup', { supervisorCode: code.value, teamCode: teamCode.value });
+      if (!pub.ready) await api('POST', '/setup', { supervisorCode: code.value });
       const s = await api('POST', '/login', { role: 'supervisor', code: code.value });
       setToken(s.token);
       refresh(true);
     } catch (err) { toast(err.message, 'err'); }
   } },
     h('h2', {}, pub.ready ? 'دخول المشرف' : 'الإعداد الأول للبرنامج'),
-    !pub.ready && h('p', { class: 'muted' }, 'اختر رمزا سريا للمشرف (يبقى عندك فقط) ورمزا آخر تسلمه لفرق الفرز.'),
+    !pub.ready && h('p', { class: 'muted' }, 'اختر رمزا سريا للمشرف (يبقى عندك فقط). بعد الدخول تنشئ فرق الفرز ولكل فريق رمزه.'),
     h('div', { class: 'field' }, h('label', {}, 'رمز المشرف'), code),
-    !pub.ready && h('div', { class: 'field' }, h('label', {}, 'رمز فرق الفرز'), teamCode),
     h('button', { class: 'primary big' }, pub.ready ? 'دخول' : 'حفظ ودخول'));
   app.replaceChildren(form);
   code.focus();
@@ -110,8 +109,8 @@ async function refresh(force) {
     renderPending();
     $('#tabs').hidden = false;
     $('#logout').hidden = false;
-    // Live refresh only touches the results tab, so typing in forms is never interrupted.
-    if (force || (changed && tab === 'rounds' && !app.contains(document.activeElement))) render();
+    // Live refresh only touches the results and teams tabs, so typing in forms is never interrupted.
+    if (force || (changed && (tab === 'rounds' || tab === 'teams') && !app.contains(document.activeElement))) render();
   } catch (err) {
     if (err.status === 401) { setToken(null); showLogin(); }
   }
@@ -119,7 +118,7 @@ async function refresh(force) {
 
 function render() {
   for (const b of $('#tabs').children) b.classList.toggle('on', b.dataset.tab === tab);
-  ({ rounds: renderRounds, people: renderPeople, settings: renderSettings })[tab]();
+  ({ rounds: renderRounds, people: renderPeople, teams: renderTeams, settings: renderSettings })[tab]();
 }
 
 // ---------- rounds ----------
@@ -141,8 +140,8 @@ function renderRounds() {
             h('span', {}, warn ? 'لم يحدد بعد' : `← أغلبية الحاضرين: ${s.presentMajority}`)),
           h('div', { class: 'muted' }, 'يمكن تغيير عدد الحاضرين في أي وقت: يطبق على الجولات المفتوحة أو التي لم تفتح بعد، ولا يغير نتائج الجولات المغلقة.'),
           h('div', { class: 'muted' }, state.teams.length
-            ? `الفرق (حاسوب لكل فريق): ${state.teams.map((t) => `${t.name}: ${t.ballots} صحيحة، ${t.cancelled} ملغاة`).join(' | ')}`
-            : 'لم يدخل أي فريق بعد'),
+            ? `الفرق: ${state.teams.map((t) => `${t.name}: ${t.ballots} صحيحة، ${t.cancelled} ملغاة`).join(' | ')}`
+            : 'لا يوجد أي فريق بعد: أنشئ الفرق من تبويب «فرق الفرز».'),
           h('div', { class: 'muted' }, `الأسماء في اللائحة: ${state.people.length} (منهم ${state.people.filter((p) => p.isMember).length} عضوا)`)),
         h('button', { class: 'primary', onclick: () => roundDialog() }, '＋ جولة جديدة'),
         h('button', { onclick: () => window.print() }, 'طباعة النتائج'))),
@@ -357,12 +356,31 @@ function mergeDialog(from) {
   picker.focus();
 }
 
+// ---------- teams ----------
+function renderTeams() {
+  app.replaceChildren(h('div', { class: 'card' },
+    h('div', { class: 'row' },
+      h('h2', { class: 'grow' }, `فرق الفرز: ${state.teams.length}`),
+      h('button', { class: 'primary', onclick: () => act(() => api('POST', '/teams'), 'تم إنشاء الفريق') }, '＋ إنشاء فريق')),
+    h('p', { class: 'muted' }, 'سلم لكل فريق رمزه يدويا. لا يمكن دخول صفحة الفرق بدون رمز.'),
+    state.teams.length ? h('div', { class: 'scroll' }, h('table', {}, h('tbody', {}, state.teams.map((t) => h('tr', {},
+      h('td', {}, h('b', {}, t.name), h('div', { class: 'muted' }, `${t.ballots} صحيحة، ${t.cancelled} ملغاة`)),
+      h('td', {}, h('b', { dir: 'ltr', style: 'font-size:1.2rem' }, t.code)),
+      h('td', { class: 'row', style: 'justify-content:flex-end' },
+        h('button', { class: 'small', onclick: () => {
+          if (confirm(`إنشاء رمز جديد لـ«${t.name}»؟ يتوقف الرمز الحالي ويخرج الفريق من الصفحة.`)) act(() => api('POST', `/teams/${t.id}/code`), 'تم إنشاء رمز جديد');
+        } }, 'رمز جديد'),
+        !(t.ballots + t.cancelled) && h('button', { class: 'small danger', onclick: () => {
+          if (confirm(`حذف «${t.name}»؟`)) act(() => api('DELETE', '/teams/' + t.id), 'تم حذف الفريق');
+        } }, 'حذف')))))))
+      : h('p', { class: 'muted' }, 'لا يوجد أي فريق بعد.')));
+}
+
 // ---------- settings ----------
 function renderSettings() {
   const s = state.settings;
   const expected = h('input', { type: 'number', min: 1, value: s.expected });
   const present = h('input', { type: 'number', min: 0, value: s.present });
-  const teamCode = h('input', { type: 'text', value: s.teamCode });
   const supCode = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'اتركه فارغا إذا لم ترد تغييره' });
   app.replaceChildren(
     h('form', { class: 'card', onsubmit: (e) => {
@@ -376,10 +394,9 @@ function renderSettings() {
       h('button', { class: 'primary' }, 'حفظ')),
     h('form', { class: 'card', onsubmit: (e) => {
       e.preventDefault();
-      act(() => api('PUT', '/settings', { teamCode: teamCode.value, supervisorCode: supCode.value || undefined }), 'تم الحفظ');
+      act(() => api('PUT', '/settings', { supervisorCode: supCode.value || undefined }), 'تم الحفظ');
     } },
-      h('h2', {}, 'رموز الدخول'),
-      h('div', { class: 'field' }, h('label', {}, 'رمز فرق الفرز'), teamCode),
+      h('h2', {}, 'رمز المشرف'),
       h('div', { class: 'field' }, h('label', {}, 'رمز جديد للمشرف'), supCode),
       h('button', { class: 'primary' }, 'حفظ')),
     h('div', { class: 'card' },

@@ -28,19 +28,6 @@ let saving = false;
 const byId = (id) => state.people.find((p) => p.id === id);
 const current = () => state.rounds.find((r) => r.id === roundId);
 
-// A random id kept in this browser, so this computer always gets the same team.
-let memoryDevice = null;
-function deviceId() {
-  let id = null;
-  try { id = localStorage.getItem('device_id'); } catch {}
-  if (!id) {
-    id = memoryDevice || Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
-    memoryDevice = id;
-    try { localStorage.setItem('device_id', id); } catch {}
-  }
-  return id;
-}
-
 function showLogin() {
   $('#logout').hidden = true;
   $('#who').textContent = '';
@@ -48,14 +35,13 @@ function showLogin() {
   const form = h('form', { class: 'card login', onsubmit: async (e) => {
     e.preventDefault();
     try {
-      const s = await api('POST', '/login', { role: 'team', device: deviceId(), code: code.value });
+      const s = await api('POST', '/login', { role: 'team', code: code.value });
       setToken(s.token);
       refresh(true);
     } catch (err) { toast(err.message, 'err'); }
   } },
     h('h2', {}, 'دخول فريق الفرز'),
-    h('p', { class: 'muted' }, 'كل حاسوب يمثل فريقا: يحصل هذا الحاسوب تلقائيا على رقم فريق خاص به.'),
-    h('div', { class: 'field' }, h('label', {}, 'رمز الفرق (يسلمه المشرف)'), code),
+    h('div', { class: 'field' }, h('label', {}, 'رمز فريقك (يسلمه لك المشرف)'), code),
     h('button', { class: 'primary big' }, 'دخول'));
   app.replaceChildren(form);
   code.focus();

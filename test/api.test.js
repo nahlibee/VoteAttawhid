@@ -80,13 +80,13 @@ describe('API', () => {
   });
 
   test('A02 setup refuses codes that are too short', async () => {
-    assert.equal((await api('POST', '/setup', { supervisorCode: 'abc', teamCode: 'team1' })).status, 400);
-    assert.equal((await api('POST', '/setup', { supervisorCode: 'super1', teamCode: 'ab' })).status, 400);
+    assert.equal((await api('POST', '/setup', { supervisorCode: 'abc' })).status, 400);
+    assert.equal((await api('POST', '/setup', {})).status, 400);
   });
 
   test('A03 setup works once only', async () => {
-    assert.equal((await api('POST', '/setup', { supervisorCode: 'super1', teamCode: 'team1' })).status, 200);
-    assert.equal((await api('POST', '/setup', { supervisorCode: 'hacker1', teamCode: 'hack' })).status, 400);
+    assert.equal((await api('POST', '/setup', { supervisorCode: 'super1' })).status, 200);
+    assert.equal((await api('POST', '/setup', { supervisorCode: 'hacker1' })).status, 400);
     assert.equal((await api('GET', '/public')).data.ready, true);
   });
 
@@ -99,28 +99,54 @@ describe('API', () => {
     assert.equal(r.data.role, 'supervisor');
   });
 
-  test('A05 team login: wrong code and missing computer id refused', async () => {
-    assert.equal((await api('POST', '/login', { role: 'team', device: 'computer-aaaa', code: 'nope' })).status, 401);
-    assert.equal((await api('POST', '/login', { role: 'team', device: 'computer-aaaa', code: 'super1' })).status, 401);
-    assert.equal((await api('POST', '/login', { role: 'team', code: 'team1' })).status, 400);
-    assert.equal((await api('POST', '/login', { role: 'team', device: 'x', code: 'team1' })).status, 400);
+  const teamLogin = (code, extra) => api('POST', '/login', { role: 'team', code, ...extra });
+  const newTeam = async () => (await api('POST', '/teams', undefined, sup)).data;
+  let code1;
+
+  test('A05 team login: only a code created by the supervisor works', async () => {
+    for (const code of ['nope', '', 'super1', '0000000000']) assert.equal((await teamLogin(code)).status, 401, code);
+    assert.equal((await teamLogin(undefined)).status, 401);
     assert.equal((await state()).teams.length, 0, 'refused logins create no team');
-    const a = (await api('POST', '/login', { role: 'team', device: 'computer-aaaa', code: 'team1' })).data;
-    const b = (await api('POST', '/login', { role: 'team', device: 'computer-bbbb', code: 'team1' })).data;
+    const t1 = await newTeam();
+    const t2 = await newTeam();
+    assert.deepEqual([t1.name, t2.name], ['الفريق 1', 'الفريق 2']);
+    assert.match(t1.code, /^\d{5}$/);
+    assert.notEqual(t1.code, t2.code);
+    code1 = t1.code;
+    const a = (await teamLogin(t1.code)).data;
+    const b = (await teamLogin(t2.code)).data;
     team1 = a.token;
     team2 = b.token;
     assert.deepEqual([a.team, b.team], ['الفريق 1', 'الفريق 2']);
   });
 
-  test('A05b each computer is one team: same computer, same team; new computer, new team', async () => {
-    const again = (await api('POST', '/login', { role: 'team', device: 'computer-aaaa', code: 'team1' })).data;
+  test('A05b a code always opens its own team; a team name sent by the browser is ignored', async () => {
+    const again = (await teamLogin(code1)).data;
     assert.equal(again.team, 'الفريق 1');
     assert.notEqual(again.token, team1);
-    // A team name sent by the computer is ignored: it cannot pose as another team.
-    const forged = (await api('POST', '/login', { role: 'team', device: 'computer-cccc', team: 'الفريق 1', code: 'team1' })).data;
-    assert.equal(forged.team, 'الفريق 3');
-    assert.deepEqual((await state()).teams, [{ name: 'الفريق 1', ballots: 0, cancelled: 0 }, { name: 'الفريق 2', ballots: 0, cancelled: 0 }, { name: 'الفريق 3', ballots: 0, cancelled: 0 }]);
+    // Typed with a space and in Arabic digits, as a person may do.
+    const arabic = code1.replace(/\d/g, (d) => '٠١٢٣٤٥٦٧٨٩'[d]);
+    assert.equal((await teamLogin(`${arabic.slice(0, 2)} ${arabic.slice(2)}`)).data.team, 'الفريق 1');
+    const t3 = await newTeam();
+    assert.equal((await teamLogin(t3.code, { team: 'الفريق 1' })).data.team, 'الفريق 3');
+    assert.deepEqual((await state()).teams.map((t) => [t.name, t.ballots, t.cancelled]), [['الفريق 1', 0, 0], ['الفريق 2', 0, 0], ['الفريق 3', 0, 0]]);
     assert.equal((await api('GET', '/team/state', undefined, team1)).status, 200, 'the first login still works');
+  });
+
+  test('A05c a new code stops the old one and logs the team out; deleting a team does too', async () => {
+    const t = await newTeam();
+    const first = (await teamLogin(t.code)).data.token;
+    const renewed = (await api('POST', `/teams/${t.id}/code`, undefined, sup)).data;
+    assert.notEqual(renewed.code, t.code);
+    assert.equal((await teamLogin(t.code)).status, 401, 'old code');
+    assert.equal((await api('GET', '/team/state', undefined, first)).status, 401, 'old login');
+    const second = (await teamLogin(renewed.code)).data;
+    assert.equal(second.team, t.name);
+    assert.equal((await api('GET', '/team/state', undefined, team1)).status, 200, 'other teams are not affected');
+    assert.equal((await api('DELETE', `/teams/${t.id}`, undefined, sup)).status, 200);
+    assert.equal((await api('GET', '/team/state', undefined, second.token)).status, 401);
+    assert.equal((await teamLogin(renewed.code)).status, 401);
+    assert.equal((await api('DELETE', '/teams/9999', undefined, sup)).status, 404);
   });
 
   test('A06 a team cannot use supervisor functions', async () => {
@@ -129,6 +155,7 @@ describe('API', () => {
       ['POST', '/rounds', { title: 't', mode: 'open', min: 1, max: 1, seats: 1 }], ['PATCH', '/rounds/1', { published: true }],
       ['DELETE', '/rounds/1'], ['PATCH', '/people/1', { isMember: true }], ['DELETE', '/people/1'],
       ['POST', '/people/merge', { from: 1, to: 2 }], ['GET', '/rounds/1/ballots'],
+      ['POST', '/teams'], ['POST', '/teams/1/code'], ['DELETE', '/teams/1'],
     ];
     for (const [m, p, b] of calls) assert.equal((await api(m, p, b, team1)).status, 401, `${m} ${p}`);
   });
@@ -138,6 +165,15 @@ describe('API', () => {
     assert.equal((await api('POST', '/ballots', { roundId: 1, choices: [1] })).status, 401);
     assert.equal((await api('POST', '/people', { name: 'شخص ما' })).status, 401);
     assert.equal((await api('GET', '/team/state', undefined, 'not-a-real-token')).status, 401);
+  });
+
+  test('A07b tokens named after built-in properties are refused', async () => {
+    for (const token of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+      assert.equal((await api('GET', '/team/state', undefined, token)).status, 401, token);
+      assert.equal((await api('POST', '/ballots', { roundId: 1, choices: [1] }, token)).status, 401, token);
+      assert.equal((await api('POST', '/people', { name: 'شخص ما' }, token)).status, 401, token);
+      assert.equal((await api('DELETE', '/ballots/1', undefined, token)).status, 401, token);
+    }
   });
 
   // ---------- settings ----------
@@ -153,12 +189,9 @@ describe('API', () => {
     assert.deepEqual([s.expected, s.absolute, s.present, s.presentMajority], [170, 86, 160, 81]);
   });
 
-  test('A10 settings: codes can be changed, short ones refused', async () => {
-    assert.equal((await api('PUT', '/settings', { teamCode: 'ab' }, sup)).status, 400);
+  test('A10 settings: the supervisor code can be changed, a short one refused', async () => {
     assert.equal((await api('PUT', '/settings', { supervisorCode: 'abc' }, sup)).status, 400);
-    assert.equal((await api('PUT', '/settings', { teamCode: 'team2', supervisorCode: 'super2' }, sup)).status, 200);
-    assert.equal((await api('POST', '/login', { role: 'team', device: 'computer-dddd', code: 'team1' })).status, 401);
-    assert.equal((await api('POST', '/login', { role: 'team', device: 'computer-bbbb', code: 'team2' })).status, 200);
+    assert.equal((await api('PUT', '/settings', { supervisorCode: 'super2' }, sup)).status, 200);
     assert.equal((await api('POST', '/login', { role: 'supervisor', code: 'super1' })).status, 401);
     assert.equal((await api('POST', '/login', { role: 'supervisor', code: 'super2' })).status, 200);
     assert.equal((await api('GET', '/team/state', undefined, team1)).status, 200, 'teams already logged in stay logged in');
@@ -318,9 +351,15 @@ describe('API', () => {
     assert.ok(t1.recent.every((b) => b.team === 'الفريق 1'));
   });
 
-  test('A22b a computer that joins in the middle of a round becomes a new team, nothing else changes', async () => {
+  test('A22c a team that entered papers cannot be deleted', async () => {
+    const t1 = (await state()).teams.find((t) => t.name === 'الفريق 1');
+    assert.equal((await api('DELETE', `/teams/${t1.id}`, undefined, sup)).status, 400);
+    assert.equal((await api('GET', '/team/state', undefined, team1)).status, 200);
+  });
+
+  test('A22b a team created in the middle of a round joins it, nothing else changes', async () => {
     const before = await roundOf(nomId);
-    const late = (await api('POST', '/login', { role: 'team', device: 'computer-late', code: 'team2' })).data;
+    const late = (await teamLogin((await newTeam()).code)).data;
     assert.equal(late.team, 'الفريق 4');
     const t = (await api('GET', '/team/state', undefined, late.token)).data;
     assert.deepEqual([t.rounds.length, t.counts[nomId] || 0, t.recent.length], [1, 0, 0]);
@@ -657,9 +696,11 @@ describe('API', () => {
     }
   });
 
-  test('A39 the supervisor code is never sent to the browser', async () => {
-    const text = JSON.stringify(await state()) + (await api('GET', '/public')).text + (await api('GET', '/team/state', undefined, team1)).text;
-    assert.doesNotMatch(text, /supHash|supSalt|super2|computer-/);
+  test('A39 the supervisor code is never sent to the browser; team codes only to the supervisor', async () => {
+    const st = await state();
+    const others = (await api('GET', '/public')).text + (await api('GET', '/team/state', undefined, team1)).text;
+    assert.doesNotMatch(JSON.stringify(st) + others, /supHash|supSalt|super2/);
+    assert.doesNotMatch(others, /"code"/);
   });
 
   // ---------- data safety ----------
@@ -683,16 +724,17 @@ describe('API', () => {
 });
 
 describe('Data from the earlier version', () => {
-  test('A42 old data without a team list still loads; a new computer does not take an existing team name', async () => {
+  test('A42 old data: each team gets its own code, the shared code and old team logins stop working', async () => {
     const dir = tmp();
     const boot = await startServer(dir);
     const call = (srv, method, p, body, token) => raw(srv.port, { method, path: '/api' + p, body, token });
-    await call(boot, 'POST', '/setup', { supervisorCode: 'super1', teamCode: 'team1' });
+    await call(boot, 'POST', '/setup', { supervisorCode: 'super1' });
     await boot.stop();
-    // Rewrite the file the way the earlier version saved it: teams chosen by name, no team list.
+    // Rewrite the file the way the earlier version saved it: one shared code, teams by computer.
     const file = path.join(dir, 'vote.json');
     const db = JSON.parse(fs.readFileSync(file, 'utf8'));
-    delete db.teams;
+    db.settings.teamCode = 'team1';
+    db.teams = [{ device: 'computer-aaaa', name: 'الفريق 3' }];
     db.people = [{ id: 1, name: 'أحمد', isMember: true }, { id: 2, name: 'محمد', isMember: true }];
     db.rounds = [{ id: 1, title: 'قديمة', kind: 'president', mode: 'list', candidates: [1, 2], min: 1, max: 1, seats: 1, threshold: 'none', status: 'open', published: false, void: 0 }];
     db.rounds.push({ id: 2, title: 'مغلقة قديمة', kind: 'runoff', mode: 'list', candidates: [1, 2], min: 1, max: 1, seats: 1, threshold: 'present', status: 'closed', published: false, void: 0 });
@@ -702,19 +744,25 @@ describe('Data from the earlier version', () => {
     db.seq = { p: 2, r: 1, b: 1 };
     fs.writeFileSync(file, JSON.stringify(db));
 
-    const srv = await startServer(dir);
+    let srv = await startServer(dir);
     try {
-      const old = await call(srv, 'GET', '/team/state', undefined, 'old-team-token');
-      assert.equal(old.status, 200, 'a computer logged in before the update keeps working');
-      assert.equal(old.data.team, 'الفريق 2');
-      const fresh = (await call(srv, 'POST', '/login', { role: 'team', device: 'computer-new1', code: 'team1' })).data;
-      assert.equal(fresh.team, 'الفريق 3');
-      const sup = (await call(srv, 'POST', '/login', { role: 'supervisor', code: 'super1' })).data.token;
+      assert.equal((await call(srv, 'GET', '/team/state', undefined, 'old-team-token')).status, 401, 'old team login stopped');
+      assert.equal((await call(srv, 'POST', '/login', { role: 'team', code: 'team1' })).status, 401, 'shared code stopped');
+      let sup = (await call(srv, 'POST', '/login', { role: 'supervisor', code: 'super1' })).data.token;
       const st = (await call(srv, 'GET', '/admin/state', undefined, sup)).data;
       assert.equal(st.rounds[0].results.valid, 1);
       assert.deepEqual(st.rounds[1].frozen, { expected: 170, present: 50 }, 'an old closed round is frozen with the counts in force');
       assert.equal(st.rounds[0].frozen, undefined, 'an open round is not');
       assert.deepEqual(st.teams.map((t) => t.name).sort(), ['الفريق 1', 'الفريق 3']);
+      assert.ok(st.teams.every((t) => /^\d{5}$/.test(t.code)));
+      const one = st.teams.find((t) => t.name === 'الفريق 1');
+      assert.equal(one.ballots, 1, 'the team keeps its papers');
+      assert.equal((await call(srv, 'POST', '/login', { role: 'team', code: one.code })).data.team, 'الفريق 1');
+      assert.equal((await call(srv, 'POST', '/teams', undefined, sup)).data.name, 'الفريق 2', 'next free number');
+      // The new codes are saved: they are the same after another restart.
+      await srv.stop();
+      srv = await startServer(dir);
+      assert.equal((await call(srv, 'POST', '/login', { role: 'team', code: one.code })).status, 200);
     } finally {
       await srv.stop();
       fs.rmSync(dir, { recursive: true, force: true });
@@ -755,7 +803,7 @@ describe('HTTPS', () => {
   test('H03 the API works end to end over HTTPS', async (t) => {
     if (skip) return t.skip('openssl not available');
     const call = (method, p, body, token) => raw(srv.port, { method, path: '/api' + p, body, token, secure: true });
-    assert.equal((await call('POST', '/setup', { supervisorCode: 'super1', teamCode: 'team1' })).status, 200);
+    assert.equal((await call('POST', '/setup', { supervisorCode: 'super1' })).status, 200);
     const token = (await call('POST', '/login', { role: 'supervisor', code: 'super1' })).data.token;
     assert.equal((await call('GET', '/admin/state', undefined, token)).status, 200);
   });

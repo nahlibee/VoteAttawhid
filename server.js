@@ -13,13 +13,13 @@ const FILE = path.join(DATA_DIR, 'vote.json');
 const PUBLIC = path.join(__dirname, 'public');
 
 let db = {
-  settings: { expected: 170, present: 0, teamCode: '', supHash: '', supSalt: '' },
+  settings: { expected: 170, present: 0, supHash: '', supSalt: '' },
   people: [], // {id, name, isMember}
   rounds: [], // {id, title, kind, mode, candidates, min, max, seats, threshold, status, published, void}
   ballots: [], // {id, roundId, team, choices, at}
   sessions: {}, // token -> {role, team}
-  teams: [], // {device, name}: one team per computer
-  seq: { p: 0, r: 0, b: 0 },
+  teams: [], // {id, name, code}: created by the supervisor
+  seq: { p: 0, r: 0, b: 0, t: 0 },
 };
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -28,6 +28,18 @@ if (fs.existsSync(FILE)) {
   fs.copyFileSync(FILE, path.join(DATA_DIR, `vote.backup-${Date.now()}.json`));
   // Rounds closed before counts were frozen keep the counts in force now.
   for (const r of db.rounds) if (r.status === 'closed' && !r.frozen) r.frozen = countsNow();
+  // Data from the version with one shared team code: each team gets its own code,
+  // and the old team logins stop working.
+  if ('teamCode' in db.settings) {
+    delete db.settings.teamCode;
+    const names = new Set([...db.teams.map((t) => t.name), ...db.ballots.map((b) => b.team)]);
+    names.delete('المشرف');
+    db.teams = [];
+    db.seq.t = 0;
+    for (const name of names) db.teams.push({ id: ++db.seq.t, name, code: newCode() });
+    for (const [token, s] of Object.entries(db.sessions)) if (s.role !== 'supervisor') delete db.sessions[token];
+    save();
+  }
 }
 
 function save() {
@@ -73,18 +85,26 @@ function addPerson(name, isMember, addedBy) {
   return p;
 }
 
-// Each computer is its own team: the first login of a computer creates the next
-// free "الفريق N", and the same computer always gets the same team back.
-function teamFor(device) {
-  let t = db.teams.find((x) => x.device === device);
-  if (!t) {
-    const used = new Set([...db.teams.map((x) => x.name), ...db.ballots.map((b) => b.team), ...Object.values(db.sessions).map((s) => s.team)]);
-    let n = 1;
-    while (used.has(`الفريق ${n}`)) n++;
-    t = { device, name: `الفريق ${n}` };
-    db.teams.push(t);
-  }
-  return t;
+// A random 5-digit code, easy to read out and to type on any keyboard.
+function newCode() {
+  let code;
+  do code = String(crypto.randomInt(1e5)).padStart(5, '0');
+  while (db.teams.some((t) => t.code === code));
+  return code;
+}
+
+// The supervisor creates the teams: each one gets the next free "الفريق N" and its own code.
+function addTeam() {
+  const used = new Set([...db.teams.map((t) => t.name), ...db.ballots.map((b) => b.team)]);
+  let n = 1;
+  while (used.has(`الفريق ${n}`)) n++;
+  const team = { id: ++db.seq.t, name: `الفريق ${n}`, code: newCode() };
+  db.teams.push(team);
+  return team;
+}
+
+function endTeamSessions(name) {
+  for (const [token, s] of Object.entries(db.sessions)) if (s.role === 'team' && s.team === name) delete db.sessions[token];
 }
 
 // Splits the names written on a paper into those written once (counted) and
@@ -169,10 +189,8 @@ function handle(method, url, body, session) {
   if (route === 'POST /setup') {
     if (isSetup()) bad('تم الإعداد مسبقا');
     if (String(body.supervisorCode || '').length < 4) bad('رمز المشرف يجب أن يتكون من 4 رموز على الأقل');
-    if (String(body.teamCode || '').length < 3) bad('رمز الفرق يجب أن يتكون من 3 رموز على الأقل');
     db.settings.supSalt = crypto.randomBytes(16).toString('hex');
     db.settings.supHash = hash(body.supervisorCode, db.settings.supSalt);
-    db.settings.teamCode = String(body.teamCode);
     save();
     return { ok: true };
   }
@@ -185,10 +203,10 @@ function handle(method, url, body, session) {
       if (!crypto.timingSafeEqual(Buffer.from(h), Buffer.from(db.settings.supHash))) bad('الرمز غير صحيح', 401);
       s = { role: 'supervisor', team: 'المشرف' };
     } else {
-      if (String(body.code || '') !== db.settings.teamCode) bad('الرمز غير صحيح', 401);
-      const device = String(body.device || '');
-      if (!/^[A-Za-z0-9_-]{8,64}$/.test(device)) bad('معرف الحاسوب غير صالح');
-      s = { role: 'team', team: teamFor(device).name };
+      // Arabic digits and spaces are accepted, so the code can be typed as it is shown.
+      const code = String(body.code || '').replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x660).replace(/\s/g, '');
+      const team = db.teams.find((t) => t.code === code) || bad('الرمز غير صحيح', 401);
+      s = { role: 'team', team: team.name };
     }
     const token = crypto.randomBytes(24).toString('hex');
     db.sessions[token] = s;
@@ -279,16 +297,15 @@ function handle(method, url, body, session) {
     for (const r of db.rounds) r.candidates.forEach((c) => used.add(c));
     return {
       settings: {
-        expected: db.settings.expected, present: db.settings.present, teamCode: db.settings.teamCode,
+        expected: db.settings.expected, present: db.settings.present,
         absolute: majority(db.settings.expected), presentMajority: majority(db.settings.present),
       },
       people: db.people.map((p) => ({ ...p, used: used.has(p.id), papers: db.ballots.filter((b) => b.choices.includes(p.id)).length })),
-      teams: [...new Set([...db.teams.map((t) => t.name), ...db.ballots.map((b) => b.team)])]
-        .map((name) => {
-          const mine = db.ballots.filter((b) => b.team === name);
-          const cancelled = mine.filter((b) => b.cancelled).length;
-          return { name, ballots: mine.length - cancelled, cancelled };
-        }),
+      teams: db.teams.map((t) => {
+        const mine = db.ballots.filter((b) => b.team === t.name);
+        const cancelled = mine.filter((b) => b.cancelled).length;
+        return { ...t, ballots: mine.length - cancelled, cancelled };
+      }),
       rounds: db.rounds.map((r) => {
         const perTeam = {};
         for (const b of db.ballots) {
@@ -305,16 +322,38 @@ function handle(method, url, body, session) {
     sup();
     if (body.expected !== undefined) db.settings.expected = intIn(body.expected, 1, 100000, 'العدد المقرر');
     if (body.present !== undefined) db.settings.present = intIn(body.present, 0, 100000, 'عدد الحاضرين');
-    if (body.teamCode !== undefined) {
-      if (String(body.teamCode).length < 3) bad('رمز الفرق قصير جدا');
-      db.settings.teamCode = String(body.teamCode);
-    }
     if (body.supervisorCode) {
       if (String(body.supervisorCode).length < 4) bad('رمز المشرف قصير جدا');
       db.settings.supHash = hash(body.supervisorCode, db.settings.supSalt);
     }
     save();
     return { ok: true };
+  }
+
+  if (route === 'POST /teams') {
+    sup();
+    const team = addTeam();
+    save();
+    return team;
+  }
+
+  if (seg[0] === 'teams' && id) {
+    sup();
+    const team = db.teams.find((t) => t.id === id) || bad('الفريق غير موجود', 404);
+    if (method === 'POST' && seg[2] === 'code') {
+      // The old code stops working and whoever used it is logged out.
+      team.code = newCode();
+      endTeamSessions(team.name);
+      save();
+      return team;
+    }
+    if (method === 'DELETE') {
+      if (db.ballots.some((b) => b.team === team.name)) bad('لا يمكن حذف فريق أدخل أوراقا');
+      db.teams = db.teams.filter((t) => t !== team);
+      endTeamSessions(team.name);
+      save();
+      return { ok: true };
+    }
   }
 
   if (route === 'POST /people/import') {
@@ -456,7 +495,9 @@ function onRequest(req, res) {
     let out;
     try {
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
-      const session = db.sessions[req.headers['x-token']] || null;
+      // Own keys only: a token such as "__proto__" must not match anything.
+      const token = req.headers['x-token'];
+      const session = Object.hasOwn(db.sessions, token) ? db.sessions[token] : null;
       out = handle(req.method, req.url.split('?')[0], body || {}, session);
     } catch (e) {
       status = e.status || (e instanceof SyntaxError ? 400 : 500);

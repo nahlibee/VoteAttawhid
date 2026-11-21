@@ -64,7 +64,7 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 
 ## Where to run it
 
-- **In the room, without internet:** run it on one laptop, connect all laptops to the same Wi-Fi router, and open the "Other computers" address printed at start.
+- **In the room, without internet:** run it on one laptop, connect all laptops to the same Wi-Fi router, and open `https://voteattawhid.local:3000`. On a device that cannot find this name (some older Android phones), use the "Other computers" address printed at start.
 - **Online:** deploy on any Node.js host with a persistent disk; set `PORT` and `DATA_DIR` if the host requires it.
 
 ## Equipment for the event

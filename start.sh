@@ -7,8 +7,9 @@ export PORT
 
 if command -v firewall-cmd >/dev/null 2>&1 && [ "$(systemctl is-active firewalld 2>/dev/null)" = "active" ]; then
   # Not --permanent: the rule also disappears on reboot or firewall reload.
-  sudo firewall-cmd --quiet --add-port="$PORT/tcp" && echo "Firewall: port $PORT opened."
-  trap 'sudo firewall-cmd --quiet --remove-port="$PORT/tcp" && echo "Firewall: port $PORT closed."' EXIT
+  # 5353/udp lets other devices find the app by its name (voteattawhid.local).
+  sudo firewall-cmd --quiet --add-port="$PORT/tcp" --add-port=5353/udp && echo "Firewall: port $PORT opened."
+  trap 'sudo firewall-cmd --quiet --remove-port="$PORT/tcp" --remove-port=5353/udp && echo "Firewall: port $PORT closed."' EXIT
   trap 'exit 0' INT TERM HUP
 fi
 

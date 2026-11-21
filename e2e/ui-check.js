@@ -25,7 +25,7 @@ const freePort = () => new Promise((resolve) => {
 let appProc = null;
 async function startApp(port, dataDir, certDir) {
   appProc = spawn(process.execPath, ['server.js'], {
-    cwd: ROOT, env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, CERT_DIR: certDir }, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: ROOT, env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, CERT_DIR: certDir, MDNS: 'off' }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';
   await new Promise((resolve, reject) => {

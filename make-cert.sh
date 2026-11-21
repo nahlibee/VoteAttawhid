@@ -15,7 +15,7 @@ if [ ! -f ca.pem ] || [ ! -f ca-key.pem ]; then
   echo "Created certificate authority: certs/ca.pem"
 fi
 
-SAN="DNS:localhost,IP:127.0.0.1"
+SAN="DNS:voteattawhid.local,DNS:voteattawhid,DNS:localhost,IP:127.0.0.1"
 for ip in $(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1); do
   SAN="$SAN,IP:$ip"
 done

@@ -488,20 +488,16 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     await t1.click('button', 'مسح');
     await t1.waitFor(`document.querySelectorAll('.chip').length === 0`, 'cleared');
   }, [t1]);
-  await check('M56', 'Two names: save greyed out; Enter offers to record a cancelled paper, "no" records nothing', async () => {
+  await check('M56', 'Two names: save greyed out; Enter says to set the paper aside, nothing recorded', async () => {
     await pick(t1, A); await pick(t1, B);
     assert(await t1.ev(`document.querySelector('#save').disabled`), 'save enabled with 2 names');
-    await t1.answers({ confirm: [false] });
     await t1.press('Enter');
-    await t1.waitFor(`__log.some((m) => m.includes('تسجيلها كورقة ملغاة'))`, 'question asked');
+    await t1.errToast('ضع الورقة جانبا');
     await sleep(300);
-    assert((await teamCount(t1)).includes('0 ملغاة'), await teamCount(t1));
-  }, [t1]);
-  await check('M58c', '…and "yes" records it as cancelled', async () => {
-    await t1.answers({ confirm: [true] });
-    await t1.press('Enter');
-    await t1.toast('تم تسجيل ورقة ملغاة');
-    await t1.waitFor(`document.querySelector('#side h2').textContent.includes('1 ملغاة')`, 'cancelled count 1');
+    const count = await teamCount(t1);
+    assert(count.includes('0 صحيحة') && !count.includes('ملغاة'), count);
+    await t1.click('button', 'مسح');
+    await t1.waitFor(`document.querySelectorAll('.chip').length === 0`, 'cleared');
   }, [t1]);
   await check('M57', 'A 6th name is refused', async () => {
     for (const n of [A, B, C, D, E]) await pick(t1, n);
@@ -538,21 +534,23 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     assert((await sup.ev('document.title')).startsWith('(1)'), await sup.ev('document.title'));
     await sup.toast('اسم جديد يحتاج إلى قرارك');
   }, [sup]);
-  await check('M58b', '«ورقة ملغاة» records a cancelled paper', async () => {
-    await pick(t1, A);
-    await t1.click('button', 'ورقة ملغاة');
-    await t1.toast('تم تسجيل ورقة ملغاة');
-    await t1.waitFor(`document.querySelector('#side h2').textContent.includes('2 ملغاة') && document.querySelectorAll('.chip').length === 0`, 'cancelled 2, entry cleared');
-    assert((await t1.text('#side')).includes('ورقة ملغاة'), 'not in the list');
+  await check('M58b', 'The team page has no button to record a cancelled paper', async () => {
+    assert(await t1.ev(`![...document.querySelectorAll('button')].some((b) => b.textContent.includes('ملغاة'))`), 'button still shown');
   }, [t1]);
-  await check('M62a', 'A team deletes its own paper', async () => {
+  await check('M62a', 'A team asks to delete its paper: still counted until the supervisor accepts', async () => {
     await nominate(t1, [A, F, G]);
     await t1.waitFor(`document.querySelector('#side h2').textContent.includes('4 صحيحة')`, '4 valid');
     await t1.answers({ confirm: [true] });
-    await t1.click('#side button', 'حذف');
-    await t1.toast('تم الحذف');
-    await t1.waitFor(`document.querySelector('#side h2').textContent.includes('3 صحيحة')`, 'back to 3');
-  }, [t1]);
+    await t1.click('#side button', 'طلب حذف');
+    await t1.toast('تم إرسال طلب الحذف');
+    await t1.waitFor(`document.querySelector('#side').textContent.includes('في انتظار موافقة المشرف')`, 'waiting badge');
+    assert((await teamCount(t1)).includes('4 صحيحة'), await teamCount(t1));
+    await sup.waitFor(`document.querySelector('#requests').textContent.includes('الفريق 1')`, 'notice', 8000);
+    await sup.answers({ confirm: [true] });
+    await sup.click('#requests button', 'قبول الحذف');
+    await sup.toast('تم حذف الورقة');
+    await t1.waitFor(`document.querySelector('#side h2').textContent.includes('3 صحيحة')`, 'back to 3', 9000);
+  }, [t1, sup]);
 
   // Team 2 papers: B 8, A 6, C 6, D 5, E 5 after merge; see docs.
   await check('S1a', 'Team 2 enters its nomination papers, including two unknown names', async () => {
@@ -567,15 +565,12 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
       await nominate(t2, rest);
     }
     await t2.waitFor(`document.querySelector('#side h2').textContent.includes('7 صحيحة')`, '7 valid');
-    await t1.answers({ confirm: [true] });
-    await t1.click('button', 'ورقة ملغاة');
-    await t1.toast('تم تسجيل ورقة ملغاة');
   }, [t2, t1]);
-  await check('M45/M47c', 'Supervisor totals update live, per team valid and cancelled', async () => {
-    await waitCard(NOM, 'الفريق 1: 3 صحيحة، 3 ملغاة');
-    await waitCard(NOM, 'الفريق 2: 7 صحيحة، 0 ملغاة');
+  await check('M45/M47c', 'Supervisor totals update live, per team', async () => {
+    await waitCard(NOM, 'الفريق 1: 3 صحيحة');
+    await waitCard(NOM, 'الفريق 2: 7 صحيحة');
     await waitCard(NOM, 'الأوراق الصحيحة: 10');
-    assert((await sup.text('#app')).includes('الفريق 1: 3 صحيحة، 3 ملغاة'), 'team list at the top');
+    assert((await sup.text('#app')).includes('الفرق: الفريق 1: 3 صحيحة'), 'team list at the top');
   }, [sup]);
   await check('M46', 'Warning when papers exceed the present count', async () => {
     await waitCard(NOM, 'أكبر من عدد الحاضرين');
@@ -631,17 +626,27 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     await sup.waitFor(`!document.querySelector('dialog[open]')`, 'closed');
     await tab('rounds');
   }, [sup]);
-  await check('M36', 'Supervisor adds 1 cancelled paper: total includes teams + supervisor', async () => {
+  await check('M36', 'Supervisor adds 1 cancelled paper: it is in the total', async () => {
     await sup.ev(`(() => { const i = (${card(NOM)}).querySelector('input[type=number]'); i.value = '1'; return true; })()`);
     await clickInCard(NOM, 'حفظ');
-    await waitCard(NOM, 'مجموع الملغاة: 4 (الفرق: 3، المشرف: 1)');
-    await waitCard(NOM, 'المجموع: 14');
+    await waitCard(NOM, 'مجموع الملغاة: 1');
+    await waitCard(NOM, 'المجموع: 11');
   }, [sup]);
-  await check('M39-M41', 'Papers window lists papers; delete one; close', async () => {
+  await check('M65', 'Supervisor rejects a delete request: paper stays counted, cannot be asked again', async () => {
     await nominate(t1, [A, F, H]);
     await waitCard(NOM, 'الأوراق الصحيحة: 11');
+    await t1.answers({ confirm: [true] });
+    await t1.click('#side button', 'طلب حذف');
+    await sup.waitFor(`document.querySelector('#requests').textContent.includes('الفريق 1')`, 'notice', 8000);
+    await sup.click('#requests button', 'رفض');
+    await sup.toast('تم رفض الحذف');
+    await t1.waitFor(`document.querySelector('#side tr').textContent.includes('رفض المشرف الحذف') && !document.querySelector('#side tr').textContent.includes('طلب حذف')`, 'rejected badge', 9000);
+    await waitCard(NOM, 'الأوراق الصحيحة: 11');
+  }, [sup, t1]);
+  await check('M39-M41', 'Papers window lists papers; delete one; close', async () => {
+    await waitCard(NOM, 'الأوراق الصحيحة: 11');
     await clickInCard(NOM, 'الأوراق');
-    await sup.waitFor(`document.querySelector('dialog[open]') && document.querySelector('dialog[open]').textContent.includes('ورقة ملغاة') && document.querySelector('dialog[open]').textContent.includes('مكرر لا يحتسب')`, 'papers list');
+    await sup.waitFor(`document.querySelector('dialog[open]') && document.querySelector('dialog[open]').textContent.includes('مكرر لا يحتسب')`, 'papers list');
     await sup.answers({ confirm: [true] });
     await sup.click('dialog[open] tr:first-child button', 'حذف');
     await sup.toast('تم حذف الورقة');
@@ -699,7 +704,7 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     await t1.keys([kb]);
     await t1.waitFor(`document.querySelectorAll('.cand.on').length === 0`, 'deselected');
     await t1.press('Enter');
-    await t1.errToast('ورقة ملغاة');
+    await t1.errToast('ضع الورقة جانبا');
     assert(!/null|undefined/.test(await t1.text('#entry')), 'stray text: ' + (await t1.text('#entry')).slice(0, 200));
   }, [sup, t1]);
   await check('M56c', '«… مكرر» in a 1-name round: struck, paper cannot be saved', async () => {

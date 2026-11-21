@@ -20,6 +20,7 @@
     <button data-tab="settings">الإعدادات</button>
   </div>
   <div id="pending"></div>
+  <div id="requests"></div>
   <div id="app"></div>
 </main>
 <dialog id="dlg"></dialog>
@@ -46,13 +47,17 @@ const act = async (fn, okMsg) => {
   try { await fn(); if (okMsg) toast(okMsg); await refresh(true); } catch (err) { toast(err.message, 'err'); }
 };
 
+// Cancelled papers now only appear for a team after a merge (or in older data).
+const paperCount = (valid, cancelled) => `${valid} صحيحة` + (cancelled ? `، ${cancelled} ملغاة` : '');
+
 // ---------- login / first setup ----------
 // Notice of names added by the teams, shown on every tab until each one is decided.
 let pendingKey = '';
 let pendingSeen = null;
 function renderPending() {
   const list = state ? state.people.filter((p) => p.pending) : [];
-  document.title = (list.length ? `(${list.length}) ` : '') + 'المشرف على الفرز';
+  const waiting = list.length + (state?.deleteRequests?.length || 0);
+  document.title = (waiting ? `(${waiting}) ` : '') + 'المشرف على الفرز';
   if (pendingSeen && list.some((p) => !pendingSeen.has(p.id))) {
     toast(`اسم جديد يحتاج إلى قرارك: ${list.filter((p) => !pendingSeen.has(p.id)).map((p) => p.name).join(' ، ')}`, 'err');
   }
@@ -75,10 +80,38 @@ function renderPending() {
         h('button', { class: 'small', onclick: () => mergeDialog(p) }, 'نفس عضو موجود')))))))] : []));
 }
 
+// Notice of papers a team asks to delete. A paper stays counted until accepted.
+let requestsKey = '';
+let requestsSeen = null;
+function renderRequests() {
+  const list = (state && state.deleteRequests) || [];
+  const fresh = requestsSeen ? list.filter((b) => !requestsSeen.has(b.id)) : [];
+  if (fresh.length) toast(`طلب حذف ورقة من: ${[...new Set(fresh.map((b) => b.team))].join(' ، ')}`, 'err');
+  requestsSeen = new Set(list.map((b) => b.id));
+  const nameOf = (id) => state.people.find((p) => p.id === id)?.name || '؟';
+  const rows = list.map((b) => ({ ...b, text: b.cancelled ? 'ورقة ملغاة' : b.choices.map(nameOf).join(' ، ') }));
+  const key = JSON.stringify(rows);
+  if (key === requestsKey) return;
+  requestsKey = key;
+  $('#requests').replaceChildren(...(rows.length ? [h('section', { class: 'card alert noprint' },
+    h('h2', {}, `طلبات حذف أوراق من فرق الفرز (${rows.length}): تحتاج إلى قرارك`),
+    h('p', { class: 'muted' }, 'تبقى الورقة محتسبة حتى تقبل حذفها.'),
+    h('table', {}, h('tbody', {}, rows.map((b) => h('tr', {},
+      h('td', {}, h('b', {}, b.text), h('div', { class: 'muted' }, `#${b.id} · ${b.team} · ${b.roundTitle}`)),
+      h('td', { class: 'row', style: 'justify-content:flex-end' },
+        h('button', { class: 'small danger', onclick: () => {
+          if (confirm('قبول حذف هذه الورقة؟ لن تحتسب بعد الآن.')) act(() => api('DELETE', '/ballots/' + b.id), 'تم حذف الورقة');
+        } }, 'قبول الحذف'),
+        h('button', { class: 'small', onclick: () => act(() => api('PATCH', '/ballots/' + b.id, {}), 'تم رفض الحذف: تبقى الورقة محتسبة') }, 'رفض')))))))] : []));
+}
+
 async function showLogin() {
   $('#pending').replaceChildren();
   pendingKey = '';
   pendingSeen = null;
+  $('#requests').replaceChildren();
+  requestsKey = '';
+  requestsSeen = null;
   $('#tabs').hidden = true;
   $('#logout').hidden = true;
   const pub = await api('GET', '/public').catch(() => ({ ready: true }));
@@ -107,6 +140,7 @@ async function refresh(force) {
     const changed = JSON.stringify(next) !== JSON.stringify(state);
     state = next;
     renderPending();
+    renderRequests();
     $('#tabs').hidden = false;
     $('#logout').hidden = false;
     // Live refresh only touches the results and teams tabs, so typing in forms is never interrupted.
@@ -140,7 +174,7 @@ function renderRounds() {
             h('span', {}, warn ? 'لم يحدد بعد' : `← أغلبية الحاضرين: ${s.presentMajority}`)),
           h('div', { class: 'muted' }, 'يمكن تغيير عدد الحاضرين في أي وقت: يطبق على الجولات المفتوحة أو التي لم تفتح بعد، ولا يغير نتائج الجولات المغلقة.'),
           h('div', { class: 'muted' }, state.teams.length
-            ? `الفرق: ${state.teams.map((t) => `${t.name}: ${t.ballots} صحيحة، ${t.cancelled} ملغاة`).join(' | ')}`
+            ? `الفرق: ${state.teams.map((t) => `${t.name}: ${paperCount(t.ballots, t.cancelled)}`).join(' | ')}`
             : 'لا يوجد أي فريق بعد: أنشئ الفرق من تبويب «فرق الفرز».'),
           h('div', { class: 'muted' }, `الأسماء في اللائحة: ${state.people.length} (منهم ${state.people.filter((p) => p.isMember).length} عضوا)`)),
         h('button', { class: 'primary', onclick: () => roundDialog() }, '＋ جولة جديدة'),
@@ -154,7 +188,7 @@ function roundCard(r) {
   const patch = (body, msg) => act(() => api('PATCH', '/rounds/' + r.id, body), msg);
   const voidInput = h('input', { type: 'number', min: 0, value: r.void });
   const over = res.present && res.total > res.present;
-  const teams = Object.entries(r.perTeam).map(([t, n]) => `${t}: ${n.valid} صحيحة، ${n.cancelled} ملغاة`).join(' | ');
+  const teams = Object.entries(r.perTeam).map(([t, n]) => `${t}: ${paperCount(n.valid, n.cancelled)}`).join(' | ');
   const next = nextRound(r);
   return h('section', { class: 'card' },
     h('div', { class: 'row' },
@@ -180,9 +214,11 @@ function roundCard(r) {
       h('label', { style: 'margin:0' }, 'أوراق ملغاة يضيفها المشرف:'), voidInput,
       h('button', { class: 'small', onclick: () => patch({ void: Number(voidInput.value) }, 'تم الحفظ') }, 'حفظ'),
       teams && h('span', { class: 'muted' }, teams),
-      h('span', { class: 'muted' }, `مجموع الملغاة: ${res.void} (الفرق: ${res.voidTeams}، المشرف: ${res.voidManual})`)),
+      h('span', { class: 'muted' }, `مجموع الملغاة: ${res.void}` + (res.voidTeams ? ` (من الأوراق المدخلة: ${res.voidTeams}، المشرف: ${res.voidManual})` : ''))),
     res.rows.some((x) => x.pending && x.votes) && h('div', { class: 'verdict warn' },
       `أسماء في انتظار مصادقتك قد تغير هذه النتيجة: ${res.rows.filter((x) => x.pending && x.votes).map((x) => `${x.name} (${x.votes})`).join(' ، ')}`),
+    (state.deleteRequests || []).some((b) => b.roundId === r.id) && h('div', { class: 'verdict warn' },
+      `طلبات حذف أوراق في انتظار قرارك في هذه الجولة: ${state.deleteRequests.filter((b) => b.roundId === r.id).length}`),
     over && h('div', { class: 'verdict warn' }, `تنبيه: مجموع الأوراق (${res.total}) أكبر من عدد الحاضرين (${state.settings.present}).`),
     r.threshold === 'present' && res.thresholdMissing && h('div', { class: 'verdict warn' }, 'يجب تحديد عدد الحاضرين لحساب أغلبية الحاضرين.'),
     h('p', { class: 'muted' }, r.frozen
@@ -270,7 +306,8 @@ async function ballotsDialog(r) {
       h('td', { class: 'muted' }, `#${b.id} · ${b.team}`),
       h('td', {}, b.cancelled ? h('span', { class: 'badge warn' }, b.cancelledByMerge ? 'ملغاة بعد الدمج' : 'ورقة ملغاة') : b.choices.map(name).join(' ، '),
         b.dropped && h('span', { class: 'badge warn' }, `مكرر لا يحتسب: ${b.dropped.map(name).join(' ، ')}`),
-        b.ignored && h('span', { class: 'badge warn' }, `أسماء خارج اللائحة لا تحتسب: ${b.ignored}`)),
+        b.ignored && h('span', { class: 'badge warn' }, `أسماء خارج اللائحة لا تحتسب: ${b.ignored}`),
+        b.deleteRequest && h('span', { class: 'badge warn' }, 'طلب حذف')),
       h('td', {}, h('button', { class: 'small danger', onclick: () => {
         if (confirm('حذف هذه الورقة؟')) act(async () => { await api('DELETE', '/ballots/' + b.id); dlg.close(); }, 'تم حذف الورقة');
       } }, 'حذف'))))))),
@@ -364,7 +401,7 @@ function renderTeams() {
       h('button', { class: 'primary', onclick: () => act(() => api('POST', '/teams'), 'تم إنشاء الفريق') }, '＋ إنشاء فريق')),
     h('p', { class: 'muted' }, 'سلم لكل فريق رمزه يدويا. لا يمكن دخول صفحة الفرق بدون رمز.'),
     state.teams.length ? h('div', { class: 'scroll' }, h('table', {}, h('tbody', {}, state.teams.map((t) => h('tr', {},
-      h('td', {}, h('b', {}, t.name), h('div', { class: 'muted' }, `${t.ballots} صحيحة، ${t.cancelled} ملغاة`)),
+      h('td', {}, h('b', {}, t.name), h('div', { class: 'muted' }, paperCount(t.ballots, t.cancelled))),
       h('td', {}, h('b', { dir: 'ltr', style: 'font-size:1.2rem' }, t.code)),
       h('td', { class: 'row', style: 'justify-content:flex-end' },
         h('button', { class: 'small', onclick: () => {

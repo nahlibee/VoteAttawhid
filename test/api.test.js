@@ -155,7 +155,7 @@ describe('API', () => {
       ['POST', '/rounds', { title: 't', mode: 'open', min: 1, max: 1, seats: 1 }], ['PATCH', '/rounds/1', { published: true }],
       ['DELETE', '/rounds/1'], ['PATCH', '/people/1', { isMember: true }], ['DELETE', '/people/1'],
       ['POST', '/people/merge', { from: 1, to: 2 }], ['GET', '/rounds/1/ballots'],
-      ['POST', '/teams'], ['POST', '/teams/1/code'], ['DELETE', '/teams/1'],
+      ['POST', '/teams'], ['POST', '/teams/1/code'], ['DELETE', '/teams/1'], ['PATCH', '/ballots/1', {}],
     ];
     for (const [m, p, b] of calls) assert.equal((await api(m, p, b, team1)).status, 401, `${m} ${p}`);
   });
@@ -306,7 +306,7 @@ describe('API', () => {
 
   test('A20b a name written twice is removed entirely, the rest of the paper counts', async () => {
     const send = (choices) => api('POST', '/ballots', { roundId: nomId, choices }, team1);
-    const del = (b) => api('DELETE', `/ballots/${b.id}`, undefined, team1);
+    const del = (b) => api('DELETE', `/ballots/${b.id}`, undefined, sup);
     // 1 twice + 2, 3, 4: name 1 is not counted, the paper counts for 2, 3 and 4.
     const a = await send([1, 2, 1, 3, 4]);
     assert.equal(a.status, 200);
@@ -371,6 +371,7 @@ describe('API', () => {
     assert.equal((await api('GET', '/team/state', undefined, team1)).data.counts[nomId], 3, 'other teams keep their own count');
     assert.equal((await api('DELETE', `/ballots/${paper.id}`, undefined, team1)).status, 403);
     assert.equal((await api('DELETE', `/ballots/${paper.id}`, undefined, late.token)).status, 200);
+    assert.equal((await api('DELETE', `/ballots/${paper.id}`, undefined, sup)).status, 200);
     r = await roundOf(nomId);
     assert.deepEqual(r.results, before.results);
   });
@@ -435,18 +436,43 @@ describe('API', () => {
     assert.equal((await roundOf(nomId)).max, 5);
   });
 
-  test('A27 deleting papers: own paper yes, another team no, supervisor always', async () => {
+  test('A27 deleting papers: a team only asks for its own, the supervisor accepts', async () => {
     const all = (await api('GET', `/rounds/${nomId}/ballots`, undefined, sup)).data;
     const mine = all.find((b) => b.team === 'الفريق 1');
     const theirs = all.find((b) => b.team === 'الفريق 2');
     assert.equal((await api('DELETE', `/ballots/${theirs.id}`, undefined, team1)).status, 403);
-    assert.equal((await api('DELETE', `/ballots/${mine.id}`, undefined, team1)).status, 200);
+    const asked = await api('DELETE', `/ballots/${mine.id}`, undefined, team1);
+    assert.deepEqual([asked.status, asked.data.requested], [200, true]);
+    assert.equal((await roundOf(nomId)).results.valid, 6, 'still counted while waiting');
+    const waiting = (await state()).deleteRequests;
+    assert.deepEqual(waiting.map((b) => [b.id, b.team, b.roundTitle]), [[mine.id, 'الفريق 1', 'الترشيح']]);
+    assert.equal((await api('DELETE', `/ballots/${mine.id}`, undefined, sup)).status, 200);
     assert.equal((await api('DELETE', `/ballots/${mine.id}`, undefined, team1)).status, 404);
     assert.equal((await api('DELETE', `/ballots/${theirs.id}`, undefined, sup)).status, 200);
     assert.equal((await roundOf(nomId)).results.valid, 4);
+    assert.equal((await state()).deleteRequests.length, 0);
     // Put them back so the following tests keep the same totals.
     await api('POST', '/ballots', { roundId: nomId, choices: mine.choices }, team1);
     await api('POST', '/ballots', { roundId: nomId, choices: theirs.choices }, team2);
+    assert.equal((await roundOf(nomId)).results.valid, 6);
+  });
+
+  test('A27b the supervisor rejects a request: the paper stays counted and cannot be asked again', async () => {
+    const paper = (await api('POST', '/ballots', { roundId: nomId, choices: [1, 2, 3] }, team1)).data;
+    assert.equal((await api('PATCH', `/ballots/${paper.id}`, {}, sup)).status, 400, 'no request yet');
+    await api('DELETE', `/ballots/${paper.id}`, undefined, team1);
+    const shown = (await api('GET', '/team/state', undefined, team1)).data.recent.find((b) => b.id === paper.id);
+    assert.ok(shown.deleteRequest, 'the team sees it is waiting');
+    assert.equal((await api('PATCH', `/ballots/${paper.id}`, {}, team1)).status, 401, 'a team cannot decide');
+    assert.equal((await api('PATCH', `/ballots/${paper.id}`, {}, sup)).status, 200);
+    assert.equal((await state()).deleteRequests.length, 0);
+    assert.equal((await roundOf(nomId)).results.valid, 7, 'still counted');
+    const after = (await api('GET', '/team/state', undefined, team1)).data.recent.find((b) => b.id === paper.id);
+    assert.deepEqual([after.deleteRequest, after.deleteRejected], [undefined, true]);
+    assert.equal((await api('DELETE', `/ballots/${paper.id}`, undefined, team1)).status, 403, 'cannot ask again');
+    assert.equal((await api('PATCH', '/ballots/9999', {}, sup)).status, 404);
+    // The supervisor can still delete it directly.
+    assert.equal((await api('DELETE', `/ballots/${paper.id}`, undefined, sup)).status, 200);
     assert.equal((await roundOf(nomId)).results.valid, 6);
   });
 
@@ -485,35 +511,13 @@ describe('API', () => {
     assert.deepEqual([res.valid, res.void, res.voidTeams, res.voidManual, res.total], [8, 3, 1, 2, 11]);
   });
 
-  test('A29b a team records cancelled papers: counted per team and in total, no vote given', async () => {
+  test('A29b a team cannot record a cancelled paper: only the supervisor counts them', async () => {
     const before = await roundOf(nomId);
-    const c1 = (await api('POST', '/ballots', { roundId: nomId, cancelled: true, choices: [1, 2, 3] }, team1)).data;
-    assert.deepEqual([c1.cancelled, c1.choices], [true, []], 'names sent with a cancelled paper are ignored');
-    await api('POST', '/ballots', { roundId: nomId, cancelled: true }, team1);
-    await api('POST', '/ballots', { roundId: nomId, cancelled: true }, team2);
-    let r = await roundOf(nomId);
-    assert.equal(r.results.valid, before.results.valid);
-    assert.equal(r.results.voidTeams, before.results.voidTeams + 3);
-    assert.equal(r.results.void, before.results.void + 3);
-    assert.equal(r.results.total, before.results.total + 3);
-    assert.deepEqual(r.results.rows.map((x) => [x.id, x.votes]), before.results.rows.map((x) => [x.id, x.votes]));
-    assert.equal(r.perTeam['الفريق 1'].cancelled, before.perTeam['الفريق 1'].cancelled + 2);
-    assert.equal(r.perTeam['الفريق 2'].cancelled, (before.perTeam['الفريق 2'].cancelled || 0) + 1);
-    const t1 = (await api('GET', '/team/state', undefined, team1)).data;
-    assert.equal(t1.cancelled[nomId], before.perTeam['الفريق 1'].cancelled + 2);
-    assert.equal(t1.counts[nomId], before.perTeam['الفريق 1'].valid, 'valid count unchanged');
-    const team1Row = (await state()).teams.find((t) => t.name === 'الفريق 1');
-    assert.ok(team1Row.cancelled >= 2);
-    // Recorded by mistake: the team deletes it like any paper.
-    assert.equal((await api('DELETE', `/ballots/${c1.id}`, undefined, team2)).status, 403);
-    assert.equal((await api('DELETE', `/ballots/${c1.id}`, undefined, team1)).status, 200);
-    // Without login, refused.
+    for (const body of [{ cancelled: true }, { cancelled: true, choices: [1, 2, 3] }, { cancelled: 1, choices: [1, 2, 3] }]) {
+      assert.equal((await api('POST', '/ballots', { roundId: nomId, ...body }, team1)).status, 403, JSON.stringify(body));
+    }
     assert.equal((await api('POST', '/ballots', { roundId: nomId, cancelled: true })).status, 401);
-    // Clean up the other two so later totals stay the same.
-    const extra = (await api('GET', `/rounds/${nomId}/ballots`, undefined, sup)).data.filter((b) => b.cancelled && !b.cancelledByMerge);
-    for (const b of extra) await api('DELETE', `/ballots/${b.id}`, undefined, sup);
-    r = await roundOf(nomId);
-    assert.deepEqual(r.results, before.results);
+    assert.deepEqual((await roundOf(nomId)).results, before.results);
   });
 
   test('A30 closing the round stops entry and deletion by the teams', async () => {
@@ -567,7 +571,7 @@ describe('API', () => {
     assert.equal((await send([1, 1])).status, 400, 'the only name written twice: nothing left');
     const extra = await send([2, 6]);
     assert.deepEqual([extra.status, extra.data.choices, extra.data.ignored], [200, [2], 1], 'candidate + non-candidate: counts for the candidate');
-    await api('DELETE', `/ballots/${extra.data.id}`, undefined, team1);
+    await api('DELETE', `/ballots/${extra.data.id}`, undefined, sup);
     assert.equal((await send([1])).status, 200);
   });
 

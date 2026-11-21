@@ -247,13 +247,8 @@ function handle(method, url, body, session) {
     any();
     const r = round(Number(body.roundId));
     if (r.status !== 'open') bad('هذه الجولة غير مفتوحة للإدخال');
-    if (body.cancelled === true) {
-      // A cancelled paper: recorded so it is counted per team and in total, gives no vote.
-      const b = { id: ++db.seq.b, roundId: r.id, team: session.team, choices: [], cancelled: true, at: Date.now() };
-      db.ballots.push(b);
-      save();
-      return b;
-    }
+    // Papers that are not accepted are set aside: only the supervisor counts them.
+    if (body.cancelled) bad('الأوراق الملغاة يحسبها المشرف فقط', 403);
     const written = list(body.choices).map(Number);
     // Names written on the paper that are not candidates of this round: the team
     // counts them (body.ignored) without having to type them.
@@ -267,7 +262,7 @@ function handle(method, url, body, session) {
     const { kept: choices, dropped } = splitDuplicates(written.filter((c) => !outside.includes(c)));
     if (choices.length < r.min || choices.length > r.max) {
       bad((dropped.length || ignored ? `بعد حذف الأسماء المكررة أو الخارجة عن اللائحة يبقى ${choices.length} من الأسماء. ` : '')
-        + `عدد الأسماء يجب أن يكون بين ${r.min} و ${r.max}. الورقة ملغاة: سجلها بزر «ورقة ملغاة»`);
+        + `عدد الأسماء يجب أن يكون بين ${r.min} و ${r.max}. ضع الورقة جانبا ليفحصها المشرف`);
     }
     const b = { id: ++db.seq.b, roundId: r.id, team: session.team, choices, at: Date.now() };
     if (dropped.length) b.dropped = dropped;
@@ -283,8 +278,24 @@ function handle(method, url, body, session) {
     if (session.role !== 'supervisor') {
       if (b.team !== session.team) bad('لا يمكن حذف ورقة فريق آخر', 403);
       if (round(b.roundId).status !== 'open') bad('الجولة مغلقة', 403);
+      if (b.deleteRejected) bad('رفض المشرف حذف هذه الورقة', 403);
+      // A team only asks: the paper stays counted until the supervisor accepts.
+      b.deleteRequest = b.deleteRequest || Date.now();
+      save();
+      return { ok: true, requested: true };
     }
     db.ballots = db.ballots.filter((x) => x !== b);
+    save();
+    return { ok: true };
+  }
+
+  // The supervisor rejects a team's request to delete a paper.
+  if (method === 'PATCH' && seg[0] === 'ballots' && id) {
+    sup();
+    const b = db.ballots.find((x) => x.id === id) || bad('الورقة غير موجودة', 404);
+    if (!b.deleteRequest) bad('لا يوجد طلب حذف لهذه الورقة');
+    delete b.deleteRequest;
+    b.deleteRejected = true;
     save();
     return { ok: true };
   }
@@ -306,6 +317,8 @@ function handle(method, url, body, session) {
         const cancelled = mine.filter((b) => b.cancelled).length;
         return { ...t, ballots: mine.length - cancelled, cancelled };
       }),
+      deleteRequests: db.ballots.filter((b) => b.deleteRequest)
+        .map((b) => ({ ...b, roundTitle: db.rounds.find((r) => r.id === b.roundId)?.title || '؟' })),
       rounds: db.rounds.map((r) => {
         const perTeam = {};
         for (const b of db.ballots) {

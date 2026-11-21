@@ -88,12 +88,11 @@ function render() {
     h('div', { class: 'row' },
       h('h2', { class: 'grow' }, r.title),
       state.rounds.length > 1 && h('button', { class: 'small', onclick: () => { roundId = null; render(); } }, 'تغيير الجولة')),
-    h('p', { class: 'muted' }, `عدد الأسماء في كل ورقة: ${rule}. الورقة التي لا تحترم ذلك أو غير الواضحة تعتبر ملغاة: سجلها بزر «ورقة ملغاة».`),
+    h('p', { class: 'muted' }, `عدد الأسماء في كل ورقة: ${rule}. الورقة التي لا تحترم ذلك أو غير الواضحة لا تدخل: ضعها جانبا ليفحصها المشرف.`),
     h('div', { id: 'entry' }),
     h('div', { class: 'row' },
       h('button', { class: 'primary big', id: 'save', onclick: saveBallot }, 'حفظ الورقة (Enter)'),
       h('button', { onclick: () => { clearPaper(); renderEntry(); } }, 'مسح'),
-      h('button', { class: 'danger', onclick: saveCancelled }, 'ورقة ملغاة'),
       h('span', { class: 'muted', id: 'hint' })));
   app.replaceChildren(entry, h('div', { class: 'card', id: 'side' }));
   picker = null;
@@ -161,7 +160,7 @@ function renderEntry() {
 function addPick(id) {
   const r = current();
   if (picks.includes(id)) return markDup(id);
-  if (counted().length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فهي ملغاة: سجلها بزر «ورقة ملغاة».`, 'err');
+  if (counted().length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فضعها جانبا ليفحصها المشرف.`, 'err');
   picks.push(id);
   renderEntry();
 }
@@ -180,7 +179,7 @@ function toggle(id) {
   const r = current();
   if (picks.includes(id)) { picks = picks.filter((x) => x !== id); dups.delete(id); }
   else if (r.max === 1) { picks = [id]; dups = new Set(); }
-  else if (counted().length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فهي ملغاة: سجلها بزر «ورقة ملغاة».`, 'err');
+  else if (counted().length >= r.max) return toast(`الحد الأقصى ${r.max} أسماء. إذا كانت الورقة تضم أكثر فضعها جانبا ليفحصها المشرف.`, 'err');
   else picks.push(id);
   renderEntry();
 }
@@ -191,9 +190,8 @@ async function saveBallot() {
   const n = counted().length;
   if (n < r.min) {
     const why = (dups.size || outside ? `بعد حذف الأسماء المكررة أو الخارجة عن اللائحة يبقى ${n}. ` : '')
-      + `يجب ${r.min} أسماء على الأقل: الورقة ملغاة.`;
-    if (picks.length || outside) { if (confirm(`${why}\nتسجيلها كورقة ملغاة؟`)) saveCancelled(); }
-    else toast(why + ' لتسجيلها اضغط «ورقة ملغاة».', 'err');
+      + `يجب ${r.min} أسماء على الأقل. ضع الورقة جانبا ليفحصها المشرف`;
+    toast(why + (picks.length || outside ? '، ثم اضغط «مسح».' : '.'), 'err');
     return;
   }
   saving = true;
@@ -208,37 +206,24 @@ async function saveBallot() {
   saving = false;
 }
 
-// Records the paper in hand as cancelled: counted for this team and in the total.
-async function saveCancelled() {
-  const r = current();
-  if (!r || saving) return;
-  saving = true;
-  try {
-    await api('POST', '/ballots', { roundId: r.id, cancelled: true });
-    clearPaper();
-    toast('تم تسجيل ورقة ملغاة ✓');
-    await refresh();
-    renderEntry();
-  } catch (err) { toast(err.message, 'err'); }
-  saving = false;
-}
-
 function renderSide() {
   const side = $('#side');
   const r = current();
   if (!side || !r) return;
   const mine = state.recent.filter((b) => b.roundId === r.id);
   side.replaceChildren(
-    h('h2', {}, `أوراق ${state.team} في هذه الجولة: ${state.counts[r.id] || 0} صحيحة · ${state.cancelled[r.id] || 0} ملغاة`),
+    h('h2', {}, `أوراق ${state.team} في هذه الجولة: ${state.counts[r.id] || 0} صحيحة${state.cancelled[r.id] ? ` · ${state.cancelled[r.id]} ملغاة` : ''}`),
     mine.length ? h('table', {}, h('tbody', {}, mine.map((b) => h('tr', {},
       h('td', {}, b.cancelled ? h('span', { class: 'badge warn' }, 'ورقة ملغاة') : b.choices.map((id) => byId(id)?.name).join(' ، '),
         b.dropped && h('span', { class: 'badge warn' }, `مكرر لا يحتسب: ${b.dropped.map((id) => byId(id)?.name).join(' ، ')}`),
-        b.ignored && h('span', { class: 'badge warn' }, `أسماء خارج اللائحة لا تحتسب: ${b.ignored}`)),
-      h('td', { style: 'width:90px' }, h('button', { class: 'small danger', onclick: async () => {
-        if (!confirm('حذف هذه الورقة؟')) return;
-        try { await api('DELETE', '/ballots/' + b.id); toast('تم الحذف'); refresh(); } catch (err) { toast(err.message, 'err'); }
-      } }, 'حذف'))))))
-      : h('p', { class: 'muted' }, 'آخر الأوراق المدخلة تظهر هنا، ويمكن حذف ورقة أدخلت بالخطأ.'));
+        b.ignored && h('span', { class: 'badge warn' }, `أسماء خارج اللائحة لا تحتسب: ${b.ignored}`),
+        b.deleteRequest && h('span', { class: 'badge warn' }, 'في انتظار موافقة المشرف على الحذف'),
+        b.deleteRejected && h('span', { class: 'badge warn' }, 'رفض المشرف الحذف')),
+      h('td', { style: 'width:100px' }, !b.deleteRequest && !b.deleteRejected && h('button', { class: 'small danger', onclick: async () => {
+        if (!confirm('طلب حذف هذه الورقة؟ تبقى محتسبة حتى يوافق المشرف.')) return;
+        try { await api('DELETE', '/ballots/' + b.id); toast('تم إرسال طلب الحذف إلى المشرف'); refresh(); } catch (err) { toast(err.message, 'err'); }
+      } }, 'طلب حذف'))))))
+      : h('p', { class: 'muted' }, 'آخر الأوراق المدخلة تظهر هنا، ويمكن طلب حذف ورقة أدخلت بالخطأ.'));
 }
 
 document.addEventListener('keydown', (e) => {

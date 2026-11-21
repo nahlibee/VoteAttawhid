@@ -27,7 +27,7 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 1. **Members** tab: paste the member list (one name per line, a column copied from Excel works).
 2. **Teams** tab: create one team per counting table and hand each team its code.
 3. **Settings** tab: enter the number of members expected and the number present.
-4. **Rounds** tab: create a round, press "open", and the teams start entering papers. Close it when all papers are in (cancelled papers are recorded by the teams as they go), then publish.
+4. **Rounds** tab: create a round, press "open", and the teams start entering papers. Close it when all papers are in (teams set doubtful papers aside for the supervisor), enter the number of cancelled papers, then publish.
 5. Each round offers a button that prepares the next one from its results (candidates already filled in).
 
 ### Rounds
@@ -44,8 +44,8 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 - Majority of those present = the same, from the number present. Cancelled papers do not lower it.
 - The number present can be changed at any time (also from the rounds tab). It applies to rounds that are open or not opened yet; a round keeps the numbers it was closed with, so later changes never alter a decided result.
 - A draw for the last place is shown with the names concerned; the supervisor decides what to do (usually a re-vote round between them).
-- A name written twice (or more) on a paper, or a name that is not a candidate of the round, is removed from it entirely, as if it was never written. The paper then counts for the other names, unless too few remain, in which case it is cancelled.
-- A paper that is cancelled (too few or too many names, unreadable, blank…) is recorded by the team with the «ورقة ملغاة» button and the team moves on. Cancelled papers are counted per team, per round and in total; the supervisor can also add cancelled papers handed to them directly.
+- A name written twice (or more) on a paper, or a name that is not a candidate of the round, is removed from it entirely, as if it was never written. The paper then counts for the other names, unless too few remain, in which case the team sets it aside.
+- Teams cannot cancel a paper. A paper with too few or too many names, unreadable or blank is set aside without being entered. The supervisor examines these papers, enters the number of cancelled ones on the round, and hands any valid one back to a team while the round is open.
 - In the nomination round a team can add a name that is not on the list and carry on. The name waits for the supervisor, who gets a notice on the supervisor page and accepts it (its votes, including those already entered, count at once), rejects it (its votes never count), or merges it with an existing member. Until then its votes are not counted.
 - Only the supervisor creates teams. Each team logs in with its own 5-digit code, which the supervisor hands over in person. A team can be added at any time, even during a round.
 - If a code leaks, «رمز جديد» replaces it and logs that team out. A team with no papers can be deleted.
@@ -55,7 +55,7 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 
 - Nomination: type the first letters, `Enter` picks the name, `Enter` on the empty field saves the paper, `Backspace` removes the last name.
 - Candidate rounds: press the candidate's number, then `Enter`. Press `0` for each name on the paper that is not a candidate (not counted).
-- A paper entered by mistake can be deleted from the list under the entry area.
+- A paper entered by mistake: press «طلب حذف» in the list under the entry area. The supervisor gets a notice and accepts or rejects. The paper stays counted until accepted, and a rejected request cannot be sent again.
 
 ## Where to run it
 
@@ -70,7 +70,7 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 - 1 projector or large screen, plus a laptop or the supervisor's one to show the results page
 - 1 printer for the final results (optional; the supervisor page prints directly)
 - Blank voting papers, one per member per round (about 170 × 6 to cover re-votes), pens, and a box per team for papers already entered
-- A tray for cancelled papers at the supervisor's table
+- A tray for papers set aside, at the supervisor's table
 
 ## HTTPS
 

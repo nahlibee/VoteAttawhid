@@ -8,7 +8,7 @@ This plan checks that the vote counting app gives correct results and that every
 |---|---|---|---|
 | Counting rules | Majorities, top five, draws, non-members | Automated, `test/results.test.js` | 32 |
 | Screen logic | Name search, result sentences, proposed next round, page scripts valid | Automated, `test/frontend.test.js` | 27 |
-| Server | Logins, permissions, team codes, paper entry, duplicate names, publishing, restart, HTTPS | Automated, `test/api.test.js` | 58 |
+| Server | Logins, permissions, team codes, paper entry, duplicate names, publishing, restart, HTTPS | Automated, `test/api.test.js` | 59 |
 | Buttons and keyboard | Every control on the three pages, with the election scenarios | Automated in Firefox, `e2e/ui-check.js` | 82 checks |
 | Full scenarios | A complete election, nominal and not | By hand, section 5 | 9 |
 | Event conditions | Several laptops, network, power | By hand, section 6 | 8 |
@@ -29,7 +29,7 @@ Needs Firefox and openssl. Takes about 3 minutes. Expected last line: `82 passed
 node --test
 ```
 
-Expected last lines: `pass 117`, `fail 0`. It takes about one second. The tests start their own temporary server on a spare port with an empty data folder, so they never touch real votes and can run while the app is in use.
+Expected last lines: `pass 118`, `fail 0`. It takes about one second. The tests start their own temporary server on a spare port with an empty data folder, so they never touch real votes and can run while the app is in use.
 
 ### Rules of reference
 
@@ -38,8 +38,8 @@ Expected last lines: `pass 117`, `fail 0`. It takes about one second. The tests 
 | Absolute majority | Half of the members expected, rounded down, plus one (170 gives 86) |
 | Majority of those present | Same formula on the present count (160 gives 81) |
 | Present count | Can change at any time; applies to rounds not yet closed; a closed round keeps the counts it was closed with |
-| Cancelled papers | Recorded by the team with «ورقة ملغاة» (counted per team) or added by the supervisor; give no vote; reported, and do not lower the majority of those present |
-| Nomination paper | 3 to 5 names, otherwise cancelled |
+| Cancelled papers | Set aside by the teams without being entered; examined, counted and added by the supervisor only; give no vote; reported, and do not lower the majority of those present |
+| Nomination paper | 3 to 5 names, otherwise set aside for the supervisor |
 | President vote candidates | Only names retained by the latest nomination (including those tied for the last place) |
 | Run-off candidates | Only candidates of the latest president vote |
 | President vote paper | Exactly 1 name |
@@ -48,10 +48,11 @@ Expected last lines: `pass 117`, `fail 0`. It takes about one second. The tests 
 | Name added by a team | Waits for the supervisor («في انتظار المصادقة»); not counted until accepted; rejected stays not counted |
 | Name written twice, or not a candidate | Removed from the paper entirely; the limits are then checked on the names left |
 | Teams | Created by the supervisor only; each team logs in with its own 5-digit code |
+| Deleting a paper | A team only asks, for its own paper in an open round; the paper stays counted until the supervisor accepts; a rejected request cannot be sent again |
 
 ### Pass criteria
 
-- All 117 automated tests pass.
+- All 118 automated tests pass.
 - Every line of sections 4, 5 and 6 is marked OK, or the failure is understood and accepted in writing by the supervisor.
 - A rehearsal of section 5, scenario S1, has been done on the event laptops.
 
@@ -139,7 +140,7 @@ Expected last lines: `pass 117`, `fail 0`. It takes about one second. The tests 
 | A05 | N/F | Team login with a code created by the supervisor; wrong, empty or supervisor code | Accepted / refused; refused logins create no team |
 | A05b | N/A | Same code again; code typed with a space and Arabic digits; a browser claims another team's name | Same team; accepted; the claim is ignored |
 | A05c | N/F | New code for a team; delete a team | Old code and old login stop working; other teams not affected |
-| A06 | F | A team calls each of the 13 supervisor actions | All refused |
+| A06 | F | A team calls each of the 14 supervisor actions | All refused |
 | A07 | F | Entry without login, or with a false login | Refused |
 | A07b | F | Tokens such as `__proto__`, `constructor`, `toString` | Refused on every entry action |
 | A08 | F | Counts of 0, negative, decimal, text | Refused |
@@ -166,10 +167,11 @@ Expected last lines: `pass 117`, `fail 0`. It takes about one second. The tests 
 | A24 | A | Remove and give back membership | Result follows each change |
 | A25 | F | Delete a name that received votes | Refused |
 | A26 | F | Reconfigure a round that has papers | Refused |
-| A27 | N/F | Delete own paper; another team's paper; as supervisor | Accepted / refused / accepted |
+| A27 | N/F | A team asks to delete its own paper; another team's paper; the supervisor accepts | Request recorded, paper still counted / refused / paper removed |
+| A27b | A/F | The supervisor rejects a request; the team asks again; a team tries to decide | Paper stays counted, team sees the refusal / refused / refused |
 | A28 | A | Merge two spellings, including papers with both | Votes moved; on a paper with both the name is not counted; a paper left under the minimum becomes a cancelled paper of its team, and is reported |
-| A29 | N/F | Supervisor adds cancelled papers: 2; -1; 2.5 | Added to the total with the team ones / refused |
-| A29b | N | Teams record 3 cancelled papers; delete one; another team tries to delete it | Counted per team, per round and in total, no vote given; deleted by its team only |
+| A29 | N/F | Supervisor adds cancelled papers: 2; -1; 2.5 | Added to the total / refused |
+| A29b | F | A team tries to record a cancelled paper, with or without names, or without login | Refused; results unchanged |
 | A30 | F | Enter a paper, record a cancelled paper, or delete a paper after closing | Refused |
 | A31 | N | Publish and hide a nomination result | Hidden until published; only retained names shown |
 | A32a | F/A | President round with a name not retained; with tied names; edited to a name not retained; bureau with any members | Refused with the nomination's title; accepted; refused; accepted |
@@ -242,7 +244,7 @@ Do these in a browser on the event laptops. Write OK or KO in the last column. P
 | M34b | «إغلاق الإدخال» while a team is entering a paper | Select a name on the team page, then close the round | The team gets «الورقة الجارية لم تحفظ» | |
 | M49b | Second round opened while a team is entering | Open another round | The team stays on its round and gets «جولة جديدة مفتوحة … تغيير الجولة» | |
 | M35 | «إعادة فتح الإدخال» | Click on a closed round | Open again | |
-| M36 | «أوراق ملغاة يضيفها المشرف», «حفظ» | Enter 3 | «مجموع الملغاة» shows the team ones + 3; total increases by 3 | |
+| M36 | «أوراق ملغاة يضيفها المشرف», «حفظ» | Enter 3 | «مجموع الملغاة» shows 3; total increases by 3 | |
 | M37 | «نشر النتيجة للعموم» | Click | Badge «منشورة للعموم»; result visible on `/` | |
 | M38 | «إخفاء عن العموم» | Click | Result disappears from `/` | |
 | M39 | «الأوراق» | Click | List of papers with number and team | |
@@ -255,6 +257,7 @@ Do these in a browser on the event laptops. Write OK or KO in the last column. P
 | M46 | Warning | Enter more papers than the present count | Orange warning on the round | |
 | M63 | «رمز جديد» (teams tab) | Confirm on a logged-in team | The team is logged out; old code refused; new code works | |
 | M64 | «حذف» (teams tab) | On a team without papers; look at a team with papers | Removed after confirmation; no delete button | |
+| M65 | Notice «طلبات حذف أوراق», «قبول الحذف» / «رفض» | A team asks to delete a paper | Within 3 s, on any tab: red message and notice with the paper, team and round. Accept removes it; reject keeps it counted | |
 
 ### Counting team page (`/team`)
 
@@ -271,18 +274,17 @@ Do these in a browser on the event laptops. Write OK or KO in the last column. P
 | M53 | `Backspace` on empty field | Press | Last chip removed | |
 | M54 | «×» on a chip | Click | That name removed | |
 | M55 | «➕ إضافة … كاسم جديد» | Type an unknown name, choose this line, confirm | Chip added in orange with «غير عضو» | |
-| M56 | «حفظ الورقة» with 2 names | Look at the button; press Enter on the empty field | Button greyed out; red message that the paper is cancelled | |
+| M56 | «حفظ الورقة» with 2 names | Look at the button; press Enter on the empty field | Button greyed out; red message to set the paper aside; nothing recorded | |
 | M56b | Same name twice | Pick a name already on the paper | Chip struck through in red «مكرر: لا يحتسب»; counter drops by one; × on it cancels the mark |
 | M56c | «… مكرر» buttons | Candidate round: select a candidate, click its «مكرر» button | Candidate struck through, not counted; with 1 name allowed, the paper can no longer be saved |
 | M56d | «＋ اسم خارج اللائحة (0)» and «−» | Candidate round: press `0` or click, then «−» | Counter «لا تحتسب: 1», hint updated; back to 0. Saved paper shows «أسماء خارج اللائحة لا تحتسب» | |
 | M57 | 6th name | Try to add a 6th name | Refused with a red message | |
 | M58 | `Enter` on empty field, or «حفظ الورقة» | With 3 names | «تم حفظ الورقة ✓»; field empty and ready; counter +1 | |
-| M58b | «ورقة ملغاة» | Click it with or without names entered | «تم تسجيل ورقة ملغاة ✓»; entry cleared; header shows «… ملغاة» +1; list shows «ورقة ملغاة»; supervisor sees it for that team and in the total | |
-| M58c | Save a paper with too few names | Enter 2 names in a nomination, press Enter | Asked «تسجيلها كورقة ملغاة؟»; yes records it as cancelled | |
+| M58b | No cancel button | Look at the entry area | The team page has no button to record a cancelled paper | |
 | M59 | «مسح» | With names chosen | All chips removed | |
 | M60 | Candidate buttons and number keys | Candidate round: press `1`, then `2` (1 name allowed) | Selection moves from 1 to 2; Arabic digits work too | |
 | M61 | `Enter` (candidate round) | With a candidate selected; with none | Saved; refused | |
-| M62 | «حذف» (recent paper) and «خروج» | Delete the last paper; log out | Paper removed and counter -1; back to login | |
+| M62 | «طلب حذف» (recent paper) and «خروج» | Ask to delete the last paper; log out | Badge «في انتظار موافقة المشرف»; counter -1 once accepted; back to login | |
 
 ### Public page (`/`)
 
@@ -302,9 +304,9 @@ Use a small assembly so the numbers can be entered quickly: **10 members expecte
 | S6 | Alternative: non-member | Nomination: a team adds «Z», who gets enough votes to be in the first five. Then the supervisor adds Z as a member. | Z shown as «غير عضو» and not retained. After the supervisor's action, Z is retained with the same votes and the 6th name drops out. |
 | S7 | Nominal: bureau | Bureau vote on 8 candidates, 9 papers of 5 names; 5 candidates get 6 or more. | The 5 are «محتفظ به», no seat left, no next round. |
 | S8 | Alternative: bureau incomplete | Bureau vote where only 3 candidates reach 6. Create the next round. Re-vote: 2 candidates reach 5. | «مقاعد لم تحسم بعد: 2». Re-vote prefilled with the other 5 candidates and 2 seats. Then 2 more kept. |
-| S10 | Alternative: name written twice | Nomination: enter a paper A, A, B, C, D, then a paper A, A, B, C. | First paper counts for B, C, D only. Second refused (2 names left): cancelled paper. |
-| S11 | Alternative: name outside the list | Bureau vote: paper with 4 candidates and a name not on the president's list; paper with only that name. | First counts for the 4. Second refused: cancelled paper. |
-| S9 | Failing: cancelled papers | Nomination: team 1 enters a paper with 2 names (accepts to record it as cancelled), team 2 clicks «ورقة ملغاة» for a blank paper. | Supervisor page: team 1 and team 2 each show 1 cancelled; «مجموع الملغاة: 2»; the total includes them; no candidate gained a vote. |
+| S10 | Alternative: name written twice | Nomination: enter a paper A, A, B, C, D, then a paper A, A, B, C. | First paper counts for B, C, D only. Second refused (2 names left): set aside for the supervisor. |
+| S11 | Alternative: name outside the list | Bureau vote: paper with 4 candidates and a name not on the president's list; paper with only that name. | First counts for the 4. Second refused: set aside for the supervisor. |
+| S9 | Failing: papers set aside | Nomination: team 1 tries a paper with 2 names and is told to set it aside; team 2 sets aside a blank paper. The supervisor examines both and enters 2 cancelled papers. | Supervisor page: «مجموع الملغاة: 2»; the total includes them; no candidate gained a vote. |
 
 ## 6. Manual cases: event conditions
 

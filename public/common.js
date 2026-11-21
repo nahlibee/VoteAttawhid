@@ -203,7 +203,7 @@ function resultsView(round, res) {
   return h('div', { class: 'results' },
     h('div', { class: 'stats' },
       h('span', {}, `الأوراق الصحيحة: ${res.valid}`),
-      h('span', {}, `الملغاة: ${res.void}` + (res.voidManual ? ` (الفرق: ${res.voidTeams}، المشرف: ${res.voidManual})` : '')),
+      h('span', {}, `الملغاة: ${res.void}` + (res.voidTeams && res.voidManual ? ` (من الأوراق المدخلة: ${res.voidTeams}، المشرف: ${res.voidManual})` : '')),
       h('span', {}, `المجموع: ${res.total}`),
       thresholdText && h('span', { class: 'strong' }, thresholdText)),
     h('div', { class: 'verdicts' }, verdict(round, res).map((v) => h('div', { class: 'verdict ' + v.kind }, v.text))),

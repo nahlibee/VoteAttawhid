@@ -218,7 +218,8 @@ function renderSide() {
         b.dropped && h('span', { class: 'badge warn' }, `مكرر لا يحتسب: ${b.dropped.map((id) => byId(id)?.name).join(' ، ')}`),
         b.ignored && h('span', { class: 'badge warn' }, `أسماء خارج اللائحة لا تحتسب: ${b.ignored}`),
         b.deleteRequest && h('span', { class: 'badge warn' }, 'في انتظار موافقة المشرف على الحذف'),
-        b.deleteRejected && h('span', { class: 'badge warn' }, 'رفض المشرف الحذف')),
+        b.deleteRejected && h('span', { class: 'badge warn' }, 'رفض المشرف الحذف'),
+        b.short && h('span', { class: 'badge warn' }, 'ملغاة: بقي أقل من الحد بعد رفض اسم')),
       h('td', { style: 'width:100px' }, !b.deleteRequest && !b.deleteRejected && h('button', { class: 'small danger', onclick: async () => {
         if (!confirm('طلب حذف هذه الورقة؟ تبقى محتسبة حتى يوافق المشرف.')) return;
         try { await api('DELETE', '/ballots/' + b.id); toast('تم إرسال طلب الحذف إلى المشرف'); refresh(); } catch (err) { toast(err.message, 'err'); }
@@ -238,7 +239,15 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-$('#logout').onclick = () => { setToken(null); state = null; showLogin(); };
+// Logging out on the server frees the team for another device.
+$('#logout').onclick = async () => {
+  try { await api('POST', '/logout'); } catch (err) {
+    if (err.status !== 401) return toast('تعذر الخروج: تحقق من الاتصال ثم أعد المحاولة.', 'err');
+  }
+  setToken(null);
+  state = null;
+  showLogin();
+};
 refresh(true);
 setInterval(() => { if (getToken() && state) refresh(); }, 3000);
 </script>

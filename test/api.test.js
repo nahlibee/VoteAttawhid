@@ -18,11 +18,12 @@ const freePort = () => new Promise((resolve) => {
   const s = net.createServer().listen(0, () => { const { port } = s.address(); s.close(() => resolve(port)); });
 });
 
-async function startServer(dataDir, certDir) {
+async function startServer(dataDir, certDir, extraEnv) {
   const port = await freePort();
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, CERT_DIR: certDir || path.join(dataDir, 'no-certs') },
+    // Tests try many wrong codes on purpose: the limit has its own test (A43).
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, CERT_DIR: certDir || path.join(dataDir, 'no-certs'), LOGIN_MAX_TRIES: '100000', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';
@@ -38,10 +39,10 @@ async function startServer(dataDir, certDir) {
 }
 
 // Raw request, so odd paths and both protocols can be tested.
-function raw(port, { method = 'GET', path: p = '/', body, token, secure = false }) {
+function raw(port, { method = 'GET', path: p = '/', body, token, secure = false, from }) {
   return new Promise((resolve, reject) => {
     const req = (secure ? https : http).request({
-      host: '127.0.0.1', port, method, path: p, rejectUnauthorized: false,
+      host: '127.0.0.1', port, method, path: p, rejectUnauthorized: false, ...(from ? { localAddress: from } : {}),
       headers: { 'Content-Type': 'application/json', ...(token ? { 'x-token': token } : {}) },
     }, (res) => {
       let text = '';
@@ -120,17 +121,23 @@ describe('API', () => {
     assert.deepEqual([a.team, b.team], ['الفريق 1', 'الفريق 2']);
   });
 
-  test('A05b a code always opens its own team; a team name sent by the browser is ignored', async () => {
-    const again = (await teamLogin(code1)).data;
-    assert.equal(again.team, 'الفريق 1');
-    assert.notEqual(again.token, team1);
-    // Typed with a space and in Arabic digits, as a person may do.
-    const arabic = code1.replace(/\d/g, (d) => '٠١٢٣٤٥٦٧٨٩'[d]);
-    assert.equal((await teamLogin(`${arabic.slice(0, 2)} ${arabic.slice(2)}`)).data.team, 'الفريق 1');
+  test('A05b one device per team: a second device is refused until the first logs out', async () => {
+    assert.equal((await teamLogin(code1)).status, 409);
+    assert.equal((await api('GET', '/team/state', undefined, team1)).status, 200, 'the first device keeps working');
     const t3 = await newTeam();
-    assert.equal((await teamLogin(t3.code, { team: 'الفريق 1' })).data.team, 'الفريق 3');
+    assert.equal((await state()).teams.find((t) => t.name === t3.name).inUse, false);
+    // Typed with a space and in Arabic digits; a team name sent by the browser is ignored.
+    const arabic = t3.code.replace(/\d/g, (d) => '٠١٢٣٤٥٦٧٨٩'[d]);
+    const first = (await teamLogin(`${arabic.slice(0, 2)} ${arabic.slice(2)}`, { team: 'الفريق 1' })).data;
+    assert.equal(first.team, 'الفريق 3');
+    assert.equal((await state()).teams.find((t) => t.name === t3.name).inUse, true);
+    assert.equal((await teamLogin(t3.code)).status, 409);
+    assert.equal((await api('POST', '/logout')).status, 401, 'logout needs a login');
+    assert.equal((await api('POST', '/logout', undefined, first.token)).status, 200);
+    assert.equal((await api('GET', '/team/state', undefined, first.token)).status, 401);
+    assert.equal((await api('GET', '/team/state', undefined, team1)).status, 200, 'other teams stay logged in');
+    assert.equal((await teamLogin(t3.code)).data.team, 'الفريق 3', 'free again after logout');
     assert.deepEqual((await state()).teams.map((t) => [t.name, t.ballots, t.cancelled]), [['الفريق 1', 0, 0], ['الفريق 2', 0, 0], ['الفريق 3', 0, 0]]);
-    assert.equal((await api('GET', '/team/state', undefined, team1)).status, 200, 'the first login still works');
   });
 
   test('A05c a new code stops the old one and logs the team out; deleting a team does too', async () => {
@@ -155,7 +162,7 @@ describe('API', () => {
       ['POST', '/rounds', { title: 't', mode: 'open', min: 1, max: 1, seats: 1 }], ['PATCH', '/rounds/1', { published: true }],
       ['DELETE', '/rounds/1'], ['PATCH', '/people/1', { isMember: true }], ['DELETE', '/people/1'],
       ['POST', '/people/merge', { from: 1, to: 2 }], ['GET', '/rounds/1/ballots'],
-      ['POST', '/teams'], ['POST', '/teams/1/code'], ['DELETE', '/teams/1'], ['PATCH', '/ballots/1', {}],
+      ['POST', '/teams'], ['POST', '/teams/1/code'], ['DELETE', '/teams/1'], ['PATCH', '/ballots/1', {}], ['GET', '/history'],
     ];
     for (const [m, p, b] of calls) assert.equal((await api(m, p, b, team1)).status, 401, `${m} ${p}`);
   });
@@ -394,7 +401,8 @@ describe('API', () => {
   test('A23b reject or accept a name added by a team', async () => {
     const z = (await api('POST', '/people', { name: 'زكرياء المختار' }, team2)).data;
     assert.equal(z.pending, true);
-    for (let i = 0; i < 2; i++) await api('POST', '/ballots', { roundId: nomId, choices: [z.id, 6, 7] }, team2);
+    // Three other names, so the papers stay valid when this name is rejected (see A44).
+    for (let i = 0; i < 2; i++) await api('POST', '/ballots', { roundId: nomId, choices: [z.id, 6, 7, 8] }, team2);
     let r = await roundOf(nomId);
     let row = r.results.rows.find((x) => x.id === z.id);
     assert.deepEqual([row.status, row.pending, row.votes], ['nonmember', true, 2], 'not counted while waiting');
@@ -578,6 +586,7 @@ describe('API', () => {
   test('A32b a name that is not a candidate is ignored, the rest of the paper counts', async () => {
     const b = await api('POST', '/rounds', { kind: 'bureau', title: 'المكتب', mode: 'list', candidates: [1, 2, 3, 4, 5, 6], min: 1, max: 5, seats: 5, threshold: 'absolute' }, sup);
     const id = b.data.id;
+    await api('PATCH', `/rounds/${presId}`, { status: 'closed' }, sup); // one round open at a time
     await api('PATCH', `/rounds/${id}`, { status: 'open' }, sup);
     const send = (body) => api('POST', '/ballots', { roundId: id, ...body }, team1);
     // 4 candidates + 1 name outside the list, counted by the team with the button.
@@ -603,6 +612,7 @@ describe('API', () => {
     assert.equal(r.results.valid, 4);
     assert.equal(r.results.rows.some((x) => x.id === 7), false, 'the outside name never appears in the results');
     assert.equal((await api('DELETE', `/rounds/${id}`, undefined, sup)).status, 200);
+    await api('PATCH', `/rounds/${presId}`, { status: 'open' }, sup);
   });
 
   test('A33 a round without papers can still be reconfigured', async () => {
@@ -656,11 +666,12 @@ describe('API', () => {
     const mk = async (title) => (await api('POST', '/rounds', { kind: 'runoff', title, mode: 'list', candidates: [1, 2], min: 1, max: 1, seats: 1, threshold: 'present' }, sup)).data.id;
     const done = await mk('مغلقة');
     const live = await mk('جارية');
+    await api('PATCH', `/rounds/${presId}`, { status: 'closed' }, sup); // one round open at a time
     for (const id of [done, live]) {
       await api('PATCH', `/rounds/${id}`, { status: 'open' }, sup);
       for (let i = 0; i < 70; i++) await api('POST', '/ballots', { roundId: id, choices: [1] }, team1);
+      if (id === done) await api('PATCH', `/rounds/${done}`, { status: 'closed' }, sup);
     }
-    await api('PATCH', `/rounds/${done}`, { status: 'closed' }, sup);
     let a = await roundOf(done);
     assert.deepEqual(a.frozen, { expected: 170, present: 160 });
     assert.deepEqual([a.results.threshold, a.results.rows[0].status], [81, 'below'], '70 < 81');
@@ -673,6 +684,7 @@ describe('API', () => {
     // Entry keeps working in the open round.
     assert.equal((await api('POST', '/ballots', { roundId: live, choices: [2] }, team2)).status, 200);
     // Reopening the closed round makes it follow the current count again.
+    await api('PATCH', `/rounds/${live}`, { status: 'closed' }, sup);
     await api('PATCH', `/rounds/${done}`, { status: 'open' }, sup);
     a = await roundOf(done);
     assert.equal(a.frozen, undefined);
@@ -761,16 +773,217 @@ describe('Data from the earlier version', () => {
       assert.ok(st.teams.every((t) => /^\d{5}$/.test(t.code)));
       const one = st.teams.find((t) => t.name === 'الفريق 1');
       assert.equal(one.ballots, 1, 'the team keeps its papers');
-      assert.equal((await call(srv, 'POST', '/login', { role: 'team', code: one.code })).data.team, 'الفريق 1');
+      const login = (await call(srv, 'POST', '/login', { role: 'team', code: one.code })).data;
+      assert.equal(login.team, 'الفريق 1');
       assert.equal((await call(srv, 'POST', '/teams', undefined, sup)).data.name, 'الفريق 2', 'next free number');
       // The new codes are saved: they are the same after another restart.
       await srv.stop();
       srv = await startServer(dir);
+      assert.equal((await call(srv, 'POST', '/logout', undefined, login.token)).status, 200, 'the login survived');
       assert.equal((await call(srv, 'POST', '/login', { role: 'team', code: one.code })).status, 200);
     } finally {
       await srv.stop();
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test('A42b if saved data has two logins for one team, only the latest stays', async () => {
+    const dir = tmp();
+    const boot = await startServer(dir);
+    const call = (srv, method, p, body, token) => raw(srv.port, { method, path: '/api' + p, body, token });
+    await call(boot, 'POST', '/setup', { supervisorCode: 'super1' });
+    const sup = (await call(boot, 'POST', '/login', { role: 'supervisor', code: 'super1' })).data.token;
+    const team = (await call(boot, 'POST', '/teams', undefined, sup)).data;
+    await boot.stop();
+    const file = path.join(dir, 'vote.json');
+    const db = JSON.parse(fs.readFileSync(file, 'utf8'));
+    db.sessions['older-login'] = { role: 'team', team: team.name };
+    db.sessions['newer-login'] = { role: 'team', team: team.name };
+    fs.writeFileSync(file, JSON.stringify(db));
+    const srv = await startServer(dir);
+    try {
+      assert.equal((await call(srv, 'GET', '/team/state', undefined, 'older-login')).status, 401);
+      assert.equal((await call(srv, 'GET', '/team/state', undefined, 'newer-login')).status, 200);
+      assert.equal((await call(srv, 'GET', '/admin/state', undefined, sup)).status, 200, 'supervisor login kept');
+    } finally {
+      await srv.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Wrong team codes', () => {
+  test('A43 after 5 wrong codes a device must wait, other devices are not affected', async (t) => {
+    const dir = tmp();
+    const srv = await startServer(dir, undefined, { LOGIN_MAX_TRIES: '5', LOGIN_BLOCK_MS: '500' });
+    const call = (method, p, body, token, from) => raw(srv.port, { method, path: '/api' + p, body, token, from });
+    const login = (code, from) => call('POST', '/login', { role: 'team', code }, undefined, from);
+    try {
+      await call('POST', '/setup', { supervisorCode: 'super1' });
+      const sup = (await call('POST', '/login', { role: 'supervisor', code: 'super1' })).data.token;
+      const a = (await call('POST', '/teams', undefined, sup)).data;
+      const b = (await call('POST', '/teams', undefined, sup)).data;
+      const c = (await call('POST', '/teams', undefined, sup)).data;
+      for (let i = 0; i < 5; i++) assert.equal((await login('wrong')).status, 401);
+      const blocked = await login(a.code);
+      assert.equal(blocked.status, 429, 'even the right code waits');
+      assert.match(blocked.data.error, /انتظر دقيقة/);
+      assert.equal((await call('POST', '/login', { role: 'supervisor', code: 'super1' })).status, 200, 'the supervisor can still log in');
+      if (process.platform === 'linux') assert.equal((await login(b.code, '127.0.0.2')).status, 200, 'another device is not blocked');
+      const history = (await call('GET', '/history', undefined, sup)).data.map((x) => x.text).join('\n');
+      assert.match(history, /حظر مؤقت للجهاز 127\.0\.0\.1/);
+      await new Promise((r) => setTimeout(r, 550));
+      assert.equal((await login(a.code)).status, 200, 'allowed again after the wait');
+      // A successful login clears the count.
+      for (let i = 0; i < 4; i++) assert.equal((await login('wrong')).status, 401);
+      assert.equal((await login(c.code)).status, 200);
+      for (let i = 0; i < 4; i++) assert.equal((await login('wrong')).status, 401);
+    } finally {
+      await srv.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Rules added after the logic review', () => {
+  let srv, dir, sup, team, teamCode;
+  const api = (method, p, body, token) => raw(srv.port, { method, path: '/api' + p, body, token });
+  const state = async () => (await api('GET', '/admin/state', undefined, sup)).data;
+  const roundOf = async (id) => (await state()).rounds.find((r) => r.id === id);
+  const open = async (cfg) => {
+    const r = (await api('POST', '/rounds', cfg, sup)).data;
+    await api('PATCH', `/rounds/${r.id}`, { status: 'open' }, sup);
+    return r.id;
+  };
+  const finish = async (id) => {
+    await api('PATCH', `/rounds/${id}`, { status: 'closed' }, sup);
+    await api('DELETE', `/rounds/${id}`, undefined, sup);
+  };
+  const FREE = { kind: 'custom', title: 'حرة', mode: 'open', min: 1, max: 5, seats: 5, threshold: 'none' };
+
+  before(async () => {
+    dir = tmp();
+    srv = await startServer(dir);
+    await api('POST', '/setup', { supervisorCode: 'super1' });
+    sup = (await api('POST', '/login', { role: 'supervisor', code: 'super1' })).data.token;
+    teamCode = (await api('POST', '/teams', undefined, sup)).data.code;
+    team = (await api('POST', '/login', { role: 'team', code: teamCode })).data.token;
+    await api('POST', '/people/import', { text: NAMES.join('\n') }, sup);
+  });
+  after(async () => { await srv.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
+
+  test('A44 a rejected name is removed: a paper left under the minimum is cancelled until the name is accepted', async () => {
+    const z = (await api('POST', '/people', { name: 'اسم مرفوض' }, team)).data;
+    const id = await open({ kind: 'nomination', title: 'ترشيح', mode: 'open', min: 3, max: 5, seats: 5, threshold: 'none' });
+    const paper = (await api('POST', '/ballots', { roundId: id, choices: [z.id, 1, 2] }, team)).data;
+    let r = await roundOf(id);
+    assert.deepEqual([r.results.valid, r.results.voidTeams], [1, 0], 'counted while the name is waiting');
+    await api('PATCH', `/people/${z.id}`, { isMember: false }, sup);
+    r = await roundOf(id);
+    assert.deepEqual([r.results.valid, r.results.voidTeams, r.results.total], [0, 1, 1]);
+    assert.equal(r.results.rows.some((x) => x.id === 1 && x.votes), false, 'the other names get no vote');
+    assert.deepEqual(r.perTeam['الفريق 1'], { valid: 0, cancelled: 1 });
+    const t = (await api('GET', '/team/state', undefined, team)).data;
+    assert.deepEqual([t.counts[id] || 0, t.cancelled[id], t.recent[0].short], [0, 1, true]);
+    assert.equal((await api('GET', `/rounds/${id}/ballots`, undefined, sup)).data[0].short, true);
+    // A new paper with the rejected name and only two others is refused.
+    const refused = await api('POST', '/ballots', { roundId: id, choices: [z.id, 1, 2] }, team);
+    assert.equal(refused.status, 400);
+    assert.match(refused.data.error, /المرفوضة/);
+    // With three other names it counts for those three.
+    assert.equal((await api('POST', '/ballots', { roundId: id, choices: [z.id, 1, 2, 3] }, team)).status, 200);
+    r = await roundOf(id);
+    assert.equal(r.results.valid, 1);
+    assert.equal(r.results.rows.find((x) => x.id === 3).votes, 1);
+    // Accepted later: both papers count again, with the votes already entered.
+    await api('PATCH', `/people/${z.id}`, { isMember: true }, sup);
+    r = await roundOf(id);
+    assert.deepEqual([r.results.valid, r.results.voidTeams], [2, 0]);
+    assert.equal(r.results.rows.find((x) => x.id === z.id).votes, 2);
+    assert.ok(paper.id);
+    await finish(id);
+  });
+
+  test('A45 merge: a person written three times on a paper gets no vote', async () => {
+    const x = (await api('POST', '/people', { name: 'كتابة أخرى' }, team)).data;
+    const id = await open(FREE);
+    const a = (await api('POST', '/ballots', { roundId: id, choices: [x.id, x.id, 7, 3] }, team)).data;
+    const b = (await api('POST', '/ballots', { roundId: id, choices: [x.id, x.id, 7] }, team)).data;
+    assert.deepEqual([a.choices, a.dropped], [[7, 3], [x.id]]);
+    const m = await api('POST', '/people/merge', { from: x.id, to: 7 }, sup);
+    assert.deepEqual(m.data.cancelled, { 'حرة': 1 }, 'the paper with only that person is left empty');
+    const all = (await api('GET', `/rounds/${id}/ballots`, undefined, sup)).data;
+    const after = all.find((p) => p.id === a.id);
+    assert.deepEqual([after.choices, after.dropped], [[3], [7]]);
+    assert.equal(all.find((p) => p.id === b.id).cancelled, true);
+    assert.equal((await roundOf(id)).results.rows.find((r) => r.id === 7)?.votes || 0, 0);
+    await finish(id);
+  });
+
+  test('A46 the history records changes, without codes, for the supervisor only', async () => {
+    const id = await open({ ...FREE, title: 'سجل' });
+    const a = (await api('POST', '/ballots', { roundId: id, choices: [1, 2] }, team)).data;
+    const b = (await api('POST', '/ballots', { roundId: id, choices: [3] }, team)).data;
+    await api('DELETE', `/ballots/${a.id}`, undefined, team);
+    await api('PATCH', `/ballots/${a.id}`, {}, sup);
+    await api('DELETE', `/ballots/${b.id}`, undefined, team);
+    await api('DELETE', `/ballots/${b.id}`, undefined, sup);
+    await api('PATCH', `/rounds/${id}`, { void: 3 }, sup);
+    await api('PATCH', `/rounds/${id}`, { void: 5, published: true }, sup);
+    await api('PUT', '/settings', { expected: 100, present: 90 }, sup);
+    await api('POST', `/teams/1/code`, undefined, sup);
+    team = (await api('POST', '/login', { role: 'team', code: (await state()).teams[0].code })).data.token;
+    await finish(id);
+    const items = (await api('GET', '/history', undefined, sup)).data;
+    const text = items.map((x) => x.text).join('\n');
+    for (const pattern of [
+      /طلب حذف الورقة #\d+ \(الفريق 1، سجل\): أحمد العلوي ، محمد بنعلي/, /رفض طلب حذف الورقة/, /قبول طلب حذف الورقة #\d+/,
+      /الأوراق الملغاة في «سجل»: 0 ← 3/, /الأوراق الملغاة في «سجل»: 3 ← 5/, /نشر نتيجة الجولة: سجل/,
+      /العدد المقرر حضورهم: 170 ← 100/, /عدد الحاضرين: 0 ← 90/, /رمز جديد لـالفريق 1/,
+      /إغلاق الجولة: سجل \(1 صحيحة، 5 ملغاة\)/, /حذف الجولة: سجل مع 1 ورقة/, /دخول من الجهاز 127\.0\.0\.1/,
+    ]) assert.match(text, pattern);
+    assert.ok(items.every((x) => x.at && x.who), 'each line has a time and an author');
+    assert.ok(items[0].at >= items[items.length - 1].at, 'newest first');
+    assert.equal(text.includes(teamCode), false, 'no team code');
+    assert.equal(text.includes('super1'), false, 'no supervisor code');
+    assert.equal((await api('GET', '/history', undefined, team)).status, 401);
+    assert.equal((await api('GET', '/history')).status, 401);
+    await srv.stop();
+    srv = await startServer(dir);
+    assert.equal((await api('GET', '/history', undefined, sup)).data.length, items.length, 'kept after a restart');
+  });
+
+  test('A47 only one round can be open at a time', async () => {
+    const a = await open({ ...FREE, title: 'الأولى' });
+    const b = (await api('POST', '/rounds', { ...FREE, title: 'الثانية' }, sup)).data;
+    const refused = await api('PATCH', `/rounds/${b.id}`, { status: 'open' }, sup);
+    assert.equal(refused.status, 400);
+    assert.match(refused.data.error, /«الأولى»/);
+    assert.equal((await roundOf(b.id)).status, 'draft');
+    assert.equal((await api('PATCH', `/rounds/${a}`, { status: 'open' }, sup)).status, 200, 'an open round can stay open');
+    await api('PATCH', `/rounds/${a}`, { status: 'closed' }, sup);
+    assert.equal((await api('PATCH', `/rounds/${b.id}`, { status: 'open' }, sup)).status, 200);
+    assert.equal((await api('PATCH', `/rounds/${a}`, { status: 'open' }, sup)).status, 400, 'nor can a closed round be reopened');
+    await finish(b.id);
+    await api('DELETE', `/rounds/${a}`, undefined, sup);
+  });
+
+  test('A48 a bureau re-vote can have one candidate; other rounds still need two', async () => {
+    const one = { title: 'واحد', mode: 'list', candidates: [5], min: 1, max: 1, seats: 1, threshold: 'present' };
+    const r = await api('POST', '/rounds', { ...one, kind: 'bureau2' }, sup);
+    assert.equal(r.status, 200);
+    assert.equal((await api('POST', '/rounds', { ...one, kind: 'bureau2', candidates: [] }, sup)).status, 400);
+    for (const kind of ['president', 'runoff', 'bureau']) assert.equal((await api('POST', '/rounds', { ...one, kind }, sup)).status, 400, kind);
+    await api('DELETE', `/rounds/${r.data.id}`, undefined, sup);
+  });
+
+  test('A49 a name kept only as a duplicate on a paper cannot be deleted', async () => {
+    const id = await open(FREE);
+    await api('POST', '/ballots', { roundId: id, choices: [8, 8, 1, 2] }, team);
+    assert.equal((await state()).people.find((p) => p.id === 8).used, true);
+    assert.equal((await api('DELETE', '/people/8', undefined, sup)).status, 400);
+    await finish(id);
+    assert.equal((await api('DELETE', '/people/8', undefined, sup)).status, 200, 'free again once the paper is gone');
   });
 });
 
@@ -810,5 +1023,8 @@ describe('HTTPS', () => {
     assert.equal((await call('POST', '/setup', { supervisorCode: 'super1' })).status, 200);
     const token = (await call('POST', '/login', { role: 'supervisor', code: 'super1' })).data.token;
     assert.equal((await call('GET', '/admin/state', undefined, token)).status, 200);
+    // The device address is known over HTTPS too: the wrong-code limit depends on it.
+    const history = (await call('GET', '/history', undefined, token)).data.map((x) => x.text).join('\n');
+    assert.match(history, /دخول من الجهاز 127\.0\.0\.1/);
   });
 });

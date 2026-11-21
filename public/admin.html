@@ -17,6 +17,7 @@
     <button data-tab="rounds">الجولات والنتائج</button>
     <button data-tab="people">لائحة الأعضاء</button>
     <button data-tab="teams">فرق الفرز</button>
+    <button data-tab="history">السجل</button>
     <button data-tab="settings">الإعدادات</button>
   </div>
   <div id="pending"></div>
@@ -143,8 +144,8 @@ async function refresh(force) {
     renderRequests();
     $('#tabs').hidden = false;
     $('#logout').hidden = false;
-    // Live refresh only touches the results and teams tabs, so typing in forms is never interrupted.
-    if (force || (changed && (tab === 'rounds' || tab === 'teams') && !app.contains(document.activeElement))) render();
+    // Live refresh only touches the tabs without forms to fill, so typing is never interrupted.
+    if (force || (changed && ['rounds', 'teams', 'history'].includes(tab) && !app.contains(document.activeElement))) render();
   } catch (err) {
     if (err.status === 401) { setToken(null); showLogin(); }
   }
@@ -152,7 +153,7 @@ async function refresh(force) {
 
 function render() {
   for (const b of $('#tabs').children) b.classList.toggle('on', b.dataset.tab === tab);
-  ({ rounds: renderRounds, people: renderPeople, teams: renderTeams, settings: renderSettings })[tab]();
+  ({ rounds: renderRounds, people: renderPeople, teams: renderTeams, history: renderHistory, settings: renderSettings })[tab]();
 }
 
 // ---------- rounds ----------
@@ -307,7 +308,8 @@ async function ballotsDialog(r) {
       h('td', {}, b.cancelled ? h('span', { class: 'badge warn' }, b.cancelledByMerge ? 'ملغاة بعد الدمج' : 'ورقة ملغاة') : b.choices.map(name).join(' ، '),
         b.dropped && h('span', { class: 'badge warn' }, `مكرر لا يحتسب: ${b.dropped.map(name).join(' ، ')}`),
         b.ignored && h('span', { class: 'badge warn' }, `أسماء خارج اللائحة لا تحتسب: ${b.ignored}`),
-        b.deleteRequest && h('span', { class: 'badge warn' }, 'طلب حذف')),
+        b.deleteRequest && h('span', { class: 'badge warn' }, 'طلب حذف'),
+        b.short && h('span', { class: 'badge warn' }, 'ملغاة: بقي أقل من الحد بعد رفض اسم')),
       h('td', {}, h('button', { class: 'small danger', onclick: () => {
         if (confirm('حذف هذه الورقة؟')) act(async () => { await api('DELETE', '/ballots/' + b.id); dlg.close(); }, 'تم حذف الورقة');
       } }, 'حذف'))))))),
@@ -399,18 +401,33 @@ function renderTeams() {
     h('div', { class: 'row' },
       h('h2', { class: 'grow' }, `فرق الفرز: ${state.teams.length}`),
       h('button', { class: 'primary', onclick: () => act(() => api('POST', '/teams'), 'تم إنشاء الفريق') }, '＋ إنشاء فريق')),
-    h('p', { class: 'muted' }, 'سلم لكل فريق رمزه يدويا. لا يمكن دخول صفحة الفرق بدون رمز.'),
+    h('p', { class: 'muted' }, 'سلم لكل فريق رمزه يدويا. كل فريق يعمل على جهاز واحد فقط. إذا تعطل الجهاز، اضغط «رمز جديد» ليدخل الفريق من جهاز آخر.'),
     state.teams.length ? h('div', { class: 'scroll' }, h('table', {}, h('tbody', {}, state.teams.map((t) => h('tr', {},
-      h('td', {}, h('b', {}, t.name), h('div', { class: 'muted' }, paperCount(t.ballots, t.cancelled))),
+      h('td', {}, h('b', {}, t.name), h('span', { class: 'badge' + (t.inUse ? ' ok' : '') }, t.inUse ? 'مفتوح على جهاز' : 'لم يدخل بعد'),
+        h('div', { class: 'muted' }, paperCount(t.ballots, t.cancelled))),
       h('td', {}, h('b', { dir: 'ltr', style: 'font-size:1.2rem' }, t.code)),
       h('td', { class: 'row', style: 'justify-content:flex-end' },
         h('button', { class: 'small', onclick: () => {
-          if (confirm(`إنشاء رمز جديد لـ«${t.name}»؟ يتوقف الرمز الحالي ويخرج الفريق من الصفحة.`)) act(() => api('POST', `/teams/${t.id}/code`), 'تم إنشاء رمز جديد');
+          if (confirm(`إنشاء رمز جديد لـ«${t.name}»؟ يتوقف الرمز الحالي ويخرج الجهاز المفتوح، ويمكن للفريق الدخول من جهاز آخر.`)) act(() => api('POST', `/teams/${t.id}/code`), 'تم إنشاء رمز جديد');
         } }, 'رمز جديد'),
         !(t.ballots + t.cancelled) && h('button', { class: 'small danger', onclick: () => {
           if (confirm(`حذف «${t.name}»؟`)) act(() => api('DELETE', '/teams/' + t.id), 'تم حذف الفريق');
         } }, 'حذف')))))))
       : h('p', { class: 'muted' }, 'لا يوجد أي فريق بعد.')));
+}
+
+// ---------- history ----------
+async function renderHistory() {
+  const items = await api('GET', '/history').catch((e) => { toast(e.message, 'err'); return null; });
+  if (!items || tab !== 'history') return;
+  app.replaceChildren(h('div', { class: 'card' },
+    h('h2', {}, `سجل التغييرات: ${items.length}`),
+    h('p', { class: 'muted' }, 'كل تغيير يسجل هنا بوقته وصاحبه، ولا يمكن تعديله أو حذفه من البرنامج. الأحدث أولا.'),
+    items.length ? h('div', { class: 'scroll' }, h('table', {}, h('tbody', {}, items.map((e) => h('tr', {},
+      h('td', { class: 'muted', dir: 'ltr', style: 'white-space:nowrap' }, new Date(e.at).toLocaleString('fr-MA', { dateStyle: 'short', timeStyle: 'medium' })),
+      h('td', { style: 'white-space:nowrap' }, e.who),
+      h('td', {}, e.text))))))
+      : h('p', { class: 'muted' }, 'لا يوجد أي تغيير بعد.')));
 }
 
 // ---------- settings ----------

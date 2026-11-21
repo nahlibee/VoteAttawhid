@@ -48,7 +48,12 @@ All data is saved in `data/vote.json` after every action. A backup copy is made 
 - Teams cannot cancel a paper. A paper with too few or too many names, unreadable or blank is set aside without being entered. The supervisor examines these papers, enters the number of cancelled ones on the round, and hands any valid one back to a team while the round is open.
 - In the nomination round a team can add a name that is not on the list and carry on. The name waits for the supervisor, who gets a notice on the supervisor page and accepts it (its votes, including those already entered, count at once), rejects it (its votes never count), or merges it with an existing member. Until then its votes are not counted.
 - Only the supervisor creates teams. Each team logs in with its own 5-digit code, which the supervisor hands over in person. A team can be added at any time, even during a round.
-- If a code leaks, «رمز جديد» replaces it and logs that team out. A team with no papers can be deleted.
+- Each team works on one device at a time: a second device using the same code is refused. Logging out frees the team.
+- If a device fails or a code leaks, «رمز جديد» replaces the code and frees the team, so it can log in from another device. A team with no papers can be deleted.
+- A rejected name is removed from its papers. A paper left with too few names counts as cancelled, unless the name is accepted later.
+- Only one round can be open at a time, so a team cannot enter a paper in the wrong round.
+- After 5 wrong team codes, a device must wait 1 minute before trying again.
+- The **السجل** tab keeps the history of every change (papers deleted, cancelled counts, rounds, names, teams, logins) with its time and author. It cannot be edited from the app.
 - The approval of the two vice-presidents is counted on the podium and is not in the app.
 
 ### Entry shortcuts for the teams

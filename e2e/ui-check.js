@@ -437,6 +437,14 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     await t1.click('button', 'دخول');
     await t1.waitFor(`document.querySelector('#who').textContent === 'الفريق 1'`, 'still الفريق 1');
   }, [t1, t2]);
+  await check('M47d', 'A second device cannot open a team already in use', async () => {
+    const other = await ff.page();
+    await other.goto(BASE + '/team');
+    await other.fill('input[type=password]', code1);
+    await other.click('button', 'دخول');
+    await other.errToast('مفتوح على جهاز آخر');
+    assert(await other.ev(`!!document.querySelector('form.login')`), 'second device got in');
+  }, [t1]);
 
   // ---------- nomination round ----------
   await check('M29', 'Create the nomination round', async () => {
@@ -607,7 +615,7 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     const get = (n) => rows.find((r) => r[0] === n) || [];
     for (const [n, v] of [[B, '8'], [A, '6'], [C, '6'], [D, '5'], [E, '5']]) assert(get(n)[1] === v && get(n)[2] === 'elected', `${n}: ${JSON.stringify(get(n))}`);
     assert(get('حسن الغريب')[1] === '2' && get('حسن الغريب')[2] === 'below', 'hassan ' + JSON.stringify(get('حسن الغريب')));
-    assert(get('شخص مرفوض')[2] === 'nonmember', 'rejected ' + JSON.stringify(get('شخص مرفوض')));
+    assert(!get('شخص مرفوض').length, 'rejected name still listed: its paper is left with 2 names, so it is cancelled');
     assert(!rows.some((r) => r[0] === 'محمد بن علي'), 'merged name still listed');
   }, [sup]);
   await check('M20', 'A name with votes has no delete button', async () => {
@@ -629,28 +637,28 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
   await check('M36', 'Supervisor adds 1 cancelled paper: it is in the total', async () => {
     await sup.ev(`(() => { const i = (${card(NOM)}).querySelector('input[type=number]'); i.value = '1'; return true; })()`);
     await clickInCard(NOM, 'حفظ');
-    await waitCard(NOM, 'مجموع الملغاة: 1');
+    await waitCard(NOM, 'مجموع الملغاة: 2 (من الأوراق المدخلة: 1، المشرف: 1)');
     await waitCard(NOM, 'المجموع: 11');
   }, [sup]);
   await check('M65', 'Supervisor rejects a delete request: paper stays counted, cannot be asked again', async () => {
     await nominate(t1, [A, F, H]);
-    await waitCard(NOM, 'الأوراق الصحيحة: 11');
+    await waitCard(NOM, 'الأوراق الصحيحة: 10');
     await t1.answers({ confirm: [true] });
     await t1.click('#side button', 'طلب حذف');
     await sup.waitFor(`document.querySelector('#requests').textContent.includes('الفريق 1')`, 'notice', 8000);
     await sup.click('#requests button', 'رفض');
     await sup.toast('تم رفض الحذف');
     await t1.waitFor(`document.querySelector('#side tr').textContent.includes('رفض المشرف الحذف') && !document.querySelector('#side tr').textContent.includes('طلب حذف')`, 'rejected badge', 9000);
-    await waitCard(NOM, 'الأوراق الصحيحة: 11');
+    await waitCard(NOM, 'الأوراق الصحيحة: 10');
   }, [sup, t1]);
   await check('M39-M41', 'Papers window lists papers; delete one; close', async () => {
-    await waitCard(NOM, 'الأوراق الصحيحة: 11');
+    await waitCard(NOM, 'الأوراق الصحيحة: 10');
     await clickInCard(NOM, 'الأوراق');
     await sup.waitFor(`document.querySelector('dialog[open]') && document.querySelector('dialog[open]').textContent.includes('مكرر لا يحتسب')`, 'papers list');
     await sup.answers({ confirm: [true] });
     await sup.click('dialog[open] tr:first-child button', 'حذف');
     await sup.toast('تم حذف الورقة');
-    await waitCard(NOM, 'الأوراق الصحيحة: 10');
+    await waitCard(NOM, 'الأوراق الصحيحة: 9');
     await clickInCard(NOM, 'الأوراق');
     await sup.click('button', 'إغلاق');
     await sup.waitFor(`!document.querySelector('dialog[open]')`, 'closed');
@@ -729,20 +737,20 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     assert(t.includes('لم يحصل أي مرشح على الأغلبية المطلوبة (6'), t.slice(0, 300));
     assert(t.includes(`يعاد التصويت بين الأول والثاني: ${A} ، ${B}`), 'run-off sentence');
   }, [sup]);
-  await check('M49', 'Two rounds open: the team picks one and can change', async () => {
+  await check('M49', 'Only one round open: the second is refused until the first is closed', async () => {
+    const NEXT = 'انتخاب الرئيس - الدور الثاني';
     await clickInCard(PRES, 'إنشاء الجولة التالية');
     await sup.waitFor(`document.querySelector('dialog[open] select').value === 'runoff' && document.querySelectorAll('dialog[open] .chip').length === 2`, 'run-off prefilled with 2');
     await sup.click('button', 'حفظ');
-    await clickInCard('انتخاب الرئيس - الدور الثاني', 'فتح الإدخال');
-    await t1.toast('جولة جديدة مفتوحة: انتخاب الرئيس - الدور الثاني', 9000);
-    assert((await t1.text('#entry')) !== '' && (await t1.text('#app')).includes('انتخاب الرئيس - التصويت'), 'team pulled away from the round it was entering');
-    await t1.click('button', 'تغيير الجولة');
-    await t1.waitFor(`document.querySelector('#app').textContent.includes('اختر الجولة')`, 'choice screen');
-    await t1.click('button', 'انتخاب الرئيس - الدور الثاني');
-    await t1.waitFor(`document.querySelectorAll('.cand').length === 2`, 'run-off entry');
-    await t1.click('button', 'تغيير الجولة');
-    await t1.waitFor(`document.querySelector('#app').textContent.includes('اختر الجولة')`, 'back to choice');
+    await sup.toast('تم حفظ الجولة');
+    await waitCard(NEXT, 'لم تفتح بعد');
+    await clickInCard(NEXT, 'فتح الإدخال');
+    await sup.errToast('أغلق أولا الجولة المفتوحة');
+    assert((await cardText(NEXT)).includes('لم تفتح بعد'), 'second round opened');
     await clickInCard(PRES, 'إغلاق الإدخال');
+    await waitCard(PRES, 'مغلقة');
+    await clickInCard(NEXT, 'فتح الإدخال');
+    await waitCard(NEXT, 'مفتوحة للإدخال');
     await t1.waitFor(`document.querySelectorAll('.cand').length === 2`, 'only the run-off left', 9000);
     await t2.waitFor(`document.querySelectorAll('.cand').length === 2`, 'team 2 on the run-off', 9000);
   }, [sup, t1]);
@@ -895,6 +903,11 @@ const PREFIX = { [A]: 'احم', [B]: 'محم', [C]: 'فاط', [D]: 'يوس', [E]
     await rowClick('الفريق 3', 'حذف');
     await sup.toast('تم حذف الفريق');
     await sup.waitFor(`!${row('الفريق 3')}`, 'team 3 gone');
+    await tab('rounds');
+  }, [sup]);
+  await check('M66', 'History tab lists the changes', async () => {
+    await tab('history');
+    await sup.waitFor(`document.querySelector('#app').textContent.includes('سجل التغييرات') && document.querySelector('#app').textContent.includes('قبول طلب حذف الورقة') && document.querySelector('#app').textContent.includes('رفض طلب حذف الورقة')`, 'history lines', 6000);
     await tab('rounds');
   }, [sup]);
   await check('P1', 'Public page links lead to the team and supervisor pages', async () => {

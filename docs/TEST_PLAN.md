@@ -8,8 +8,8 @@ This plan checks that the vote counting app gives correct results and that every
 |---|---|---|---|
 | Counting rules | Majorities, top five, draws, non-members | Automated, `test/results.test.js` | 32 |
 | Screen logic | Name search, result sentences, proposed next round, page scripts valid | Automated, `test/frontend.test.js` | 27 |
-| Server | Logins, permissions, team codes, paper entry, duplicate names, publishing, restart, HTTPS | Automated, `test/api.test.js` | 59 |
-| Buttons and keyboard | Every control on the three pages, with the election scenarios | Automated in Firefox, `e2e/ui-check.js` | 82 checks |
+| Server | Logins, permissions, team codes, paper entry, duplicate names, publishing, restart, HTTPS | Automated, `test/api.test.js` | 67 |
+| Buttons and keyboard | Every control on the three pages, with the election scenarios | Automated in Firefox, `e2e/ui-check.js` | 84 checks |
 | Full scenarios | A complete election, nominal and not | By hand, section 5 | 9 |
 | Event conditions | Several laptops, network, power | By hand, section 6 | 8 |
 
@@ -21,7 +21,7 @@ This plan checks that the vote counting app gives correct results and that every
 node e2e/ui-check.js
 ```
 
-Needs Firefox and openssl. Takes about 3 minutes. Expected last line: `82 passed, 0 failed`. Screenshots of any failure are saved in `e2e/out/`.
+Needs Firefox and openssl. Takes about 3 minutes. Expected last line: `84 passed, 0 failed`. Screenshots of any failure are saved in `e2e/out/`.
 
 ### Run the automated tests
 
@@ -29,7 +29,7 @@ Needs Firefox and openssl. Takes about 3 minutes. Expected last line: `82 passed
 node --test
 ```
 
-Expected last lines: `pass 118`, `fail 0`. It takes about one second. The tests start their own temporary server on a spare port with an empty data folder, so they never touch real votes and can run while the app is in use.
+Expected last lines: `pass 126`, `fail 0`. It takes about one second. The tests start their own temporary server on a spare port with an empty data folder, so they never touch real votes and can run while the app is in use.
 
 ### Rules of reference
 
@@ -47,12 +47,16 @@ Expected last lines: `pass 118`, `fail 0`. It takes about one second. The tests 
 | Draw | Announced with the names; the supervisor decides |
 | Name added by a team | Waits for the supervisor («في انتظار المصادقة»); not counted until accepted; rejected stays not counted |
 | Name written twice, or not a candidate | Removed from the paper entirely; the limits are then checked on the names left |
-| Teams | Created by the supervisor only; each team logs in with its own 5-digit code |
+| Teams | Created by the supervisor only; each team logs in with its own 5-digit code, on one device at a time |
+| Wrong team codes | After 5 wrong codes a device waits 1 minute; other devices are not affected |
+| Rejected name | Removed from its papers; a paper left under the minimum counts as cancelled until the name is accepted |
+| Open rounds | Only one round can be open at a time |
+| History | Every change is recorded with its time and author, without any code; visible to the supervisor only |
 | Deleting a paper | A team only asks, for its own paper in an open round; the paper stays counted until the supervisor accepts; a rejected request cannot be sent again |
 
 ### Pass criteria
 
-- All 118 automated tests pass.
+- All 126 automated tests pass.
 - Every line of sections 4, 5 and 6 is marked OK, or the failure is understood and accepted in writing by the supervisor.
 - A rehearsal of section 5, scenario S1, has been done on the event laptops.
 
@@ -138,9 +142,9 @@ Expected last lines: `pass 118`, `fail 0`. It takes about one second. The tests 
 | A03 | N | Setup, then a second setup attempt | First accepted, second refused |
 | A04 | N/F | Supervisor login, right and wrong code | Accepted / refused |
 | A05 | N/F | Team login with a code created by the supervisor; wrong, empty or supervisor code | Accepted / refused; refused logins create no team |
-| A05b | N/A | Same code again; code typed with a space and Arabic digits; a browser claims another team's name | Same team; accepted; the claim is ignored |
+| A05b | N/F | Second device with a code in use; code typed with a space and Arabic digits; a browser claims another team's name; log out | Refused, first device keeps working; accepted; the claim is ignored; team free again |
 | A05c | N/F | New code for a team; delete a team | Old code and old login stop working; other teams not affected |
-| A06 | F | A team calls each of the 14 supervisor actions | All refused |
+| A06 | F | A team calls each of the 15 supervisor actions | All refused |
 | A07 | F | Entry without login, or with a false login | Refused |
 | A07b | F | Tokens such as `__proto__`, `constructor`, `toString` | Refused on every entry action |
 | A08 | F | Counts of 0, negative, decimal, text | Refused |
@@ -189,6 +193,14 @@ Expected last lines: `pass 118`, `fail 0`. It takes about one second. The tests 
 | A40 | N | Stop and restart the server | Same data, logins kept, backup file created |
 | A41 | N | Delete a round | Its papers and public result are gone, other rounds intact |
 | A42 | A | Data saved by the earlier version (one shared team code, closed rounds without frozen counts) | Loads; each team keeps its papers and gets its own code, saved across restarts; the shared code and old team logins stop working; old closed rounds are frozen with the counts in force |
+| A42b | A | Saved data with two logins for one team | Only the latest stays |
+| A43 | F/A | 5 wrong team codes from one device | Even the right code waits; supervisor and other devices are not affected; allowed again after the wait; recorded in the history |
+| A44 | A | Nomination paper with 2 members and a name that is then rejected; accepted later | Cancelled while rejected, no vote given; a new such paper is refused; counts again once accepted |
+| A45 | A | Merge when a person is written three times on a paper | That person gets no vote; a paper left empty is cancelled |
+| A46 | N/F | Deleted papers, requests, cancelled counts, settings, rounds, logins | All in the history with time and author, no code; teams cannot read it; kept after a restart |
+| A47 | F | Open or reopen a round while another is open | Refused with the title of the open round |
+| A48 | N/F | Bureau re-vote with one candidate; other rounds with one candidate | Accepted / refused |
+| A49 | F | Delete a name that only appears as a duplicate on a paper | Refused |
 | H01 | N | Start with a certificate | Pages answer in HTTPS |
 | H02 | A | Open the `http://` address | Redirected to `https://` on the same port |
 | H03 | N | Setup and login over HTTPS | Work |
@@ -242,7 +254,6 @@ Do these in a browser on the event laptops. Write OK or KO in the last column. P
 | M33 | «فتح الإدخال» | Click | State «مفتوحة للإدخال»; round appears on `/team` | |
 | M34 | «إغلاق الإدخال» | Click | State «مغلقة»; round disappears from `/team` | |
 | M34b | «إغلاق الإدخال» while a team is entering a paper | Select a name on the team page, then close the round | The team gets «الورقة الجارية لم تحفظ» | |
-| M49b | Second round opened while a team is entering | Open another round | The team stays on its round and gets «جولة جديدة مفتوحة … تغيير الجولة» | |
 | M35 | «إعادة فتح الإدخال» | Click on a closed round | Open again | |
 | M36 | «أوراق ملغاة يضيفها المشرف», «حفظ» | Enter 3 | «مجموع الملغاة» shows 3; total increases by 3 | |
 | M37 | «نشر النتيجة للعموم» | Click | Badge «منشورة للعموم»; result visible on `/` | |
@@ -258,6 +269,7 @@ Do these in a browser on the event laptops. Write OK or KO in the last column. P
 | M63 | «رمز جديد» (teams tab) | Confirm on a logged-in team | The team is logged out; old code refused; new code works | |
 | M64 | «حذف» (teams tab) | On a team without papers; look at a team with papers | Removed after confirmation; no delete button | |
 | M65 | Notice «طلبات حذف أوراق», «قبول الحذف» / «رفض» | A team asks to delete a paper | Within 3 s, on any tab: red message and notice with the paper, team and round. Accept removes it; reject keeps it counted | |
+| M66 | Tab «السجل» | Open it after some changes | Changes listed, newest first, with time and author | |
 
 ### Counting team page (`/team`)
 
@@ -265,9 +277,10 @@ Do these in a browser on the event laptops. Write OK or KO in the last column. P
 |---|---|---|---|---|
 | M47 | «دخول» | Wrong code, then the team's code | Red message, then access; the team's name appears in the header | |
 | M47b | One code per team | Log in with a second team's code; log out and in again with the first | Each code opens its own team | |
+| M47d | One device per team | Enter a code already open on another device | Red message «مفتوح على جهاز آخر»; stays on the login form | |
 | M47c | Team list for the supervisor | Look at the top of the rounds tab on `/admin` | Each team with its number of papers | |
 | M48 | No round open | Log in before any round is open | Message to wait; the page updates by itself when a round opens | |
-| M49 | Round buttons, «تغيير الجولة» | With two rounds open, pick one, then change | Entry screen of the chosen round | |
+| M49 | «فتح الإدخال» with a round already open | Try to open a second round, close the first, open it again | Red message naming the open round; opens once the first is closed; teams move to it | |
 | M50 | Name field | Type 3 letters | List of matching names; first one highlighted | |
 | M51 | Arrow keys, `Enter` | Move down, press Enter | The highlighted name is added as a numbered chip | |
 | M52 | `Escape` | Type letters, press Escape | Field cleared | |
@@ -326,5 +339,6 @@ Use a small assembly so the numbers can be entered quickly: **10 members expecte
 - **Papers are not numbered**, so the app cannot detect the same paper entered twice. The only guard is the warning when the total exceeds the present count (M46). Each team should move entered papers to a separate box.
 - **A tied run-off and a tied draw re-vote have no automatic rule.** The app announces the draw with the names; the committee decides.
 - **The `https://` warning** appears on each device until `certs/ca.pem` is imported in its browser.
-- **A team code works on any computer.** Two computers using the same code count as the same team. This lets a team move to another laptop if one fails; a leaked code is replaced with «رمز جديد».
+- **The wrong-code wait is per network address.** Someone who keeps changing address on the Wi-Fi can try more codes. Having every team log in before the first round closes this, because a code already in use cannot be opened elsewhere.
+- **A team stays tied to its device until it logs out.** If the device fails, or its browser data is cleared, the supervisor presses «رمز جديد» so the team can log in from another device.
 - **Screens update every 3 seconds** (teams) and 3 seconds (supervisor). A team can still see a round for up to 3 seconds after it is closed; it is then told if a paper in progress was not saved.

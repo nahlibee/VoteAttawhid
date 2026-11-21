@@ -688,14 +688,7 @@ if (secure) {
 }
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\nVote counting app is running${secure ? ' (HTTPS)' : ''}.`);
-  // The app's name on the local network. MDNS=off is used by the tests.
-  if (process.env.MDNS !== 'off') {
-    const mdns = require('./lib/mdns');
-    mdns.start((e) => console.error('Local name not available:', e.message));
-    console.log(`  By name:        ${scheme}://${mdns.HOST}:${PORT}`);
-  }
-  console.log(`  This computer:  ${scheme}://localhost:${PORT}`);
+  console.log(`\nVote counting app is running${secure ? ' (HTTPS)' : ''}.\n  This computer:  ${scheme}://localhost:${PORT}`);
   for (const [name, list] of Object.entries(os.networkInterfaces())) {
     if (/^(docker|br-|veth|virbr)/.test(name)) continue;
     for (const a of list || []) {

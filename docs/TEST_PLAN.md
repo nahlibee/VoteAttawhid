@@ -9,7 +9,6 @@ This plan checks that the vote counting app gives correct results and that every
 | Counting rules | Majorities, top five, draws, non-members | Automated, `test/results.test.js` | 32 |
 | Screen logic | Name search, result sentences, proposed next round, page scripts valid | Automated, `test/frontend.test.js` | 27 |
 | Server | Logins, permissions, team codes, paper entry, duplicate names, publishing, restart, HTTPS | Automated, `test/api.test.js` | 67 |
-| Local name | Answers for `voteattawhid.local`, ignores everything else, survives malformed packets | Automated, `test/mdns.test.js` | 4 |
 | Buttons and keyboard | Every control on the three pages, with the election scenarios | Automated in Firefox, `e2e/ui-check.js` | 84 checks |
 | Full scenarios | A complete election, nominal and not | By hand, section 5 | 9 |
 | Event conditions | Several laptops, network, power | By hand, section 6 | 8 |
@@ -30,7 +29,7 @@ Needs Firefox and openssl. Takes about 3 minutes. Expected last line: `84 passed
 node --test
 ```
 
-Expected last lines: `pass 130`, `fail 0`. It takes about one second. The tests start their own temporary server on a spare port with an empty data folder, so they never touch real votes and can run while the app is in use.
+Expected last lines: `pass 126`, `fail 0`. It takes about one second. The tests start their own temporary server on a spare port with an empty data folder, so they never touch real votes and can run while the app is in use.
 
 ### Rules of reference
 
@@ -57,7 +56,7 @@ Expected last lines: `pass 130`, `fail 0`. It takes about one second. The tests 
 
 ### Pass criteria
 
-- All 130 automated tests pass.
+- All 126 automated tests pass.
 - Every line of sections 4, 5 and 6 is marked OK, or the failure is understood and accepted in writing by the supervisor.
 - A rehearsal of section 5, scenario S1, has been done on the event laptops.
 
@@ -334,7 +333,6 @@ Use a small assembly so the numbers can be entered quickly: **10 members expecte
 | E6 | Wi-Fi cut on one team | Turn off Wi-Fi on a team laptop, press save, turn it back on | Red error, paper not counted; saving again works and the paper is counted once | |
 | E7 | New network | Change Wi-Fi network, run `./make-cert.sh`, restart | The new address works in HTTPS | |
 | E8 | Record after the event | Copy `data/vote.json` to a USB key | File copied; it contains every paper | |
-| E9 | App name | On each event device, open `https://voteattawhid.local:3000` | The app opens; on a device that cannot find the name, the IP address still works | |
 
 ## 7. Known limits
 

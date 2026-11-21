@@ -23,7 +23,7 @@ async function startServer(dataDir, certDir, extraEnv) {
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     // Tests try many wrong codes on purpose: the limit has its own test (A43).
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, CERT_DIR: certDir || path.join(dataDir, 'no-certs'), LOGIN_MAX_TRIES: '100000', MDNS: 'off', ...extraEnv },
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, CERT_DIR: certDir || path.join(dataDir, 'no-certs'), LOGIN_MAX_TRIES: '100000', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';

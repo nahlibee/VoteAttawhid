@@ -431,11 +431,6 @@ async function renderHistory() {
 }
 
 // ---------- settings ----------
-// The address to give to others: the app's name rather than localhost or an IP.
-const shareOrigin = () => (/^(localhost$|\d+\.\d+\.\d+\.\d+$)/.test(location.hostname)
-  ? `${location.protocol}//voteattawhid.local${location.port ? ':' + location.port : ''}`
-  : location.origin);
-
 function renderSettings() {
   const s = state.settings;
   const expected = h('input', { type: 'number', min: 1, value: s.expected });
@@ -460,8 +455,8 @@ function renderSettings() {
       h('button', { class: 'primary' }, 'حفظ')),
     h('div', { class: 'card' },
       h('h2', {}, 'عناوين الصفحات'),
-      h('p', {}, 'فرق الفرز: ', h('b', { dir: 'ltr' }, shareOrigin() + '/team')),
-      h('p', {}, 'النتائج العامة (للعرض على الشاشة): ', h('b', { dir: 'ltr' }, shareOrigin() + '/'))));
+      h('p', {}, 'فرق الفرز: ', h('b', { dir: 'ltr' }, location.origin + '/team')),
+      h('p', {}, 'النتائج العامة (للعرض على الشاشة): ', h('b', { dir: 'ltr' }, location.origin + '/'))));
 }
 
 $('#tabs').addEventListener('click', (e) => {
